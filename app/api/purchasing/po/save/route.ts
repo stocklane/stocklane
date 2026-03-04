@@ -37,6 +37,40 @@ interface SavePORequest {
   imageFiles?: File[];
 }
 
+function roundMoney(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function normalizeLineMath(lines: SavePORequest['poLines']): SavePORequest['poLines'] {
+  return (lines || []).map((line) => {
+    const quantity = typeof line.quantity === 'number' && line.quantity > 0 ? line.quantity : 0;
+    let unitCostExVAT = typeof line.unitCostExVAT === 'number' ? line.unitCostExVAT : 0;
+    let lineTotalExVAT = typeof line.lineTotalExVAT === 'number' ? line.lineTotalExVAT : 0;
+
+    if (quantity > 0) {
+      if (lineTotalExVAT > 0 && unitCostExVAT <= 0) {
+        unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+      } else if (unitCostExVAT > 0 && lineTotalExVAT <= 0) {
+        lineTotalExVAT = roundMoney(unitCostExVAT * quantity);
+      } else if (unitCostExVAT > 0 && lineTotalExVAT > 0) {
+        const expectedTotal = roundMoney(unitCostExVAT * quantity);
+        const diff = Math.abs(expectedTotal - lineTotalExVAT);
+        const tolerance = Math.max(0.1, roundMoney(lineTotalExVAT * 0.01));
+        if (diff > tolerance) {
+          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+        }
+      }
+    }
+
+    return {
+      ...line,
+      quantity,
+      unitCostExVAT: roundMoney(Math.max(0, unitCostExVAT)),
+      lineTotalExVAT: roundMoney(Math.max(0, lineTotalExVAT)),
+    };
+  });
+}
+
 // POST endpoint to save approved purchase order data
 export async function POST(request: NextRequest) {
   try {
@@ -47,7 +81,7 @@ export async function POST(request: NextRequest) {
 
     const contentType = request.headers.get('content-type');
     let data: SavePORequest;
-    let imageFiles: File[] = [];
+    const imageFiles: File[] = [];
 
     if (contentType?.includes('multipart/form-data')) {
       const formData = await request.formData();
@@ -79,6 +113,8 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    data.poLines = normalizeLineMath(data.poLines);
 
     // Save to database
     try {

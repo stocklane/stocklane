@@ -791,6 +791,19 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
       0,
     );
 
+    // Prefer editable PO line pricing over transit.unitcostgbp, which can become stale.
+    const resolveUnitCost = (transitRow: any, poLine: any): number => {
+      const poLineUnit = Number(poLine?.unitcostexvat);
+      if (Number.isFinite(poLineUnit) && poLineUnit >= 0) {
+        return poLineUnit;
+      }
+      const transitUnit = Number(transitRow?.unitcostgbp);
+      if (Number.isFinite(transitUnit) && transitUnit >= 0) {
+        return transitUnit;
+      }
+      return 0;
+    };
+
     // Derive expected average unit cost from on-hand + what is currently on order (transit)
     const onHandQty = inventory ? inventory.quantityOnHand : 0;
     const onHandAvg = inventory ? inventory.averageCostGBP : 0;
@@ -804,12 +817,7 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
 
         const poLine = poLinesById.get(t.polineid as string) || null;
 
-        let rawUnitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(rawUnitCost) || rawUnitCost <= 0) {
-          rawUnitCost = Number(poLine?.unitcostexvat ?? 0);
-        }
-
-        const unitCost = Number.isFinite(rawUnitCost) && rawUnitCost >= 0 ? rawUnitCost : 0;
+        const unitCost = resolveUnitCost(t, poLine);
 
         blendedTotalQty += qty;
         blendedTotalCost += qty * unitCost;
@@ -831,10 +839,7 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
         if (!Number.isFinite(qty) || qty <= 0) continue;
 
         const poLine = poLinesById.get(t.polineid as string) || null;
-        let unitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(unitCost) || unitCost <= 0) {
-          unitCost = Number(poLine?.unitcostexvat ?? 0);
-        }
+        const unitCost = resolveUnitCost(t, poLine);
         if (!Number.isFinite(unitCost) || unitCost <= 0) continue;
 
         fallbackTotalQty += qty;

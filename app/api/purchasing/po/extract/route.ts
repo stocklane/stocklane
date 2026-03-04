@@ -131,6 +131,9 @@ Exchange rates the SERVER will use to convert TO GBP (for your reference ONLY, d
 **UNIT COST vs LINE TOTAL - CRITICAL:**
 - Each line item has a quantity, a unit cost (price per single unit), and a line total (quantity × unit cost).
 - Some invoices only show ONE price per line (not both unit cost and line total).
+- If the table has BOTH a PRICE and TOTAL column, treat TOTAL as authoritative for lineTotalExVAT.
+- In that case, compute unitCostExVAT = lineTotalExVAT / quantity (rounded to 2dp) if needed.
+- If PRICE × quantity conflicts with TOTAL, prefer TOTAL and recompute unitCostExVAT from TOTAL.
 - When only ONE price is shown per line, you MUST determine if it is the unit cost or line total:
   1. Sum ALL the single prices across all line items.
   2. Compare that sum to the invoice subtotal/total (ignoring shipping/extras/VAT).
@@ -142,7 +145,7 @@ Exchange rates the SERVER will use to convert TO GBP (for your reference ONLY, d
 **Other Important Rules:**
 - If multiple files/pages are provided, they are ALL part of the SAME invoice/order - combine all data
 - Extract ALL line items from ALL documents/pages
-- **EXTRAS field**: Extract shipping, delivery, handling, freight charges (NOT part of line items). Set to 0 if none.
+- **EXTRAS field**: Extract shipping, delivery, handling, freight, postage charges here (NOT part of poLines). Set to 0 if none.
 - **SUBTOTAL**: Sum of all line items BEFORE extras and VAT
 - **TOTAL**: subtotal + extras + VAT
 - If a field is not present, use null or empty string (use 0 for numeric fields like extras)
@@ -179,6 +182,62 @@ interface ExtractedData {
   };
 }
 
+function roundMoney(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function parseMoney(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return 0;
+  const cleaned = value.replace(/[^0-9.-]/g, '');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeLineMath(extractedData: ExtractedData): void {
+  extractedData.poLines = (extractedData.poLines || []).map((line) => {
+    const quantityRaw = parseMoney(line.quantity);
+    const quantity = quantityRaw > 0 ? quantityRaw : 0;
+    let unitCostExVAT = parseMoney(line.unitCostExVAT);
+    let lineTotalExVAT = parseMoney(line.lineTotalExVAT);
+
+    if (quantity > 0) {
+      if (lineTotalExVAT > 0 && unitCostExVAT <= 0) {
+        unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+      } else if (unitCostExVAT > 0 && lineTotalExVAT <= 0) {
+        lineTotalExVAT = roundMoney(unitCostExVAT * quantity);
+      } else if (unitCostExVAT > 0 && lineTotalExVAT > 0) {
+        const expectedTotal = roundMoney(unitCostExVAT * quantity);
+        const diff = Math.abs(expectedTotal - lineTotalExVAT);
+        const tolerance = Math.max(0.1, roundMoney(lineTotalExVAT * 0.01));
+        if (diff > tolerance) {
+          // When OCR disagrees, prefer explicit line total and recompute unit.
+          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+        }
+      }
+    }
+
+    return {
+      ...line,
+      quantity,
+      unitCostExVAT: roundMoney(Math.max(0, unitCostExVAT)),
+      lineTotalExVAT: roundMoney(Math.max(0, lineTotalExVAT)),
+    };
+  });
+
+  if (extractedData.totals) {
+    const computedSubtotal = roundMoney(
+      extractedData.poLines.reduce((sum, line) => sum + (line.lineTotalExVAT || 0), 0),
+    );
+    const subtotal = parseMoney(extractedData.totals.subtotal);
+    const subtotalDiff = Math.abs(subtotal - computedSubtotal);
+    const subtotalTolerance = Math.max(1, roundMoney(computedSubtotal * 0.05));
+    if (subtotal <= 0 || subtotalDiff > subtotalTolerance) {
+      extractedData.totals.subtotal = computedSubtotal;
+    }
+  }
+}
+
 function convertToGBP(extractedData: ExtractedData, exchangeRates: { [key: string]: number }) {
   const originalCurrencyRaw = extractedData.purchaseOrder?.originalCurrency;
   if (!originalCurrencyRaw) {
@@ -213,11 +272,11 @@ function convertToGBP(extractedData: ExtractedData, exchangeRates: { [key: strin
       if (convertedLine > 0) {
         // Prefer the line total as source of truth when present
         lineTotalExVAT = convertedLine;
-        unitCostExVAT = Number((convertedLine / quantity).toFixed(2));
+        unitCostExVAT = roundMoney(convertedLine / quantity);
       } else if (convertedUnit > 0) {
         // Fallback: derive line total from unit cost
         unitCostExVAT = convertedUnit;
-        lineTotalExVAT = Number((convertedUnit * quantity).toFixed(2));
+        lineTotalExVAT = roundMoney(convertedUnit * quantity);
       } else {
         unitCostExVAT = 0;
         lineTotalExVAT = 0;
@@ -395,6 +454,7 @@ export async function POST(request: NextRequest) {
 
     // 6. Convert all monetary values from original currency to GBP using live exchange rates
     convertToGBP(extractedData, exchangeRates);
+    normalizeLineMath(extractedData);
 
     // 7. Sanity check: if sum of line totals is way off from the invoice total,
     //    the AI likely confused unit costs with line totals. Auto-correct.
@@ -417,7 +477,7 @@ export async function POST(request: NextRequest) {
         });
         // Recalculate subtotal
         const newSubtotal = extractedData.poLines.reduce((s, l) => s + l.lineTotalExVAT, 0);
-        extractedData.totals.subtotal = Number(newSubtotal.toFixed(2));
+        extractedData.totals.subtotal = roundMoney(newSubtotal);
       }
     }
 

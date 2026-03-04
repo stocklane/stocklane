@@ -395,7 +395,7 @@ export default function InventoryPage() {
     try {
       setLoading(true);
       setError(null);
-      const res = await authenticatedFetch('/api/inventory/snapshot');
+      const res = await authenticatedFetch('/api/inventory/snapshot?refresh=true');
       const json = await res.json();
       if (!res.ok || !json.success) {
         throw new Error(json.error || 'Failed to load inventory');
@@ -1474,8 +1474,17 @@ export default function InventoryPage() {
                       draggable
                       onDragStart={(e) => handleProductDragStart(e, row.product)}
                     >
-                      <div className="h-28 bg-gradient-to-br from-stone-50 to-stone-100 dark:from-stone-700 dark:to-stone-600 flex items-center justify-center border-b border-stone-100 dark:border-stone-700">
-                        <span className="text-2xl font-bold text-stone-300 dark:text-stone-500 uppercase tracking-wider">{initials}</span>
+                      <div className="h-28 bg-gradient-to-br from-stone-50 to-stone-100 dark:from-stone-700 dark:to-stone-600 flex items-center justify-center border-b border-stone-100 dark:border-stone-700 overflow-hidden">
+                        {row.product.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={row.product.imageUrl}
+                            alt={row.product.name}
+                            className="h-full w-full object-contain p-2"
+                          />
+                        ) : (
+                          <span className="text-2xl font-bold text-stone-300 dark:text-stone-500 uppercase tracking-wider">{initials}</span>
+                        )}
                       </div>
                       <div className="p-3 flex flex-col flex-1">
                         <div className="flex items-start justify-between gap-2 flex-1 mb-2">

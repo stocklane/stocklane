@@ -506,7 +506,45 @@ export default function ProductHistoryPage() {
   const inTransitQty = transit.reduce((sum, t) => sum + (t.transit.remainingQuantity || 0), 0);
   const quantityOnHand = inventory?.quantityOnHand || 0;
   const totalStockForValue = quantityOnHand + inTransitQty;
-  const totalValue = totalStockForValue * (inventory?.averageCostGBP || 0);
+  const rowCostBreakdown = transit.reduce(
+    (acc, row) => {
+      const ordered = row.transit.quantity || 0;
+      const remaining = row.transit.remainingQuantity || 0;
+      const received = Math.max(0, ordered - remaining);
+      const poUnit = row.poLine?.unitCostExVAT;
+      const transitUnit = row.transit.unitCostGBP;
+      const fallbackUnit =
+        typeof poUnit === 'number' && Number.isFinite(poUnit) && poUnit > 0
+          ? poUnit
+          : typeof transitUnit === 'number' && Number.isFinite(transitUnit) && transitUnit > 0
+            ? transitUnit
+            : 0;
+      const lineTotal = row.poLine?.lineTotalExVAT;
+      const hasLineTotal =
+        typeof lineTotal === 'number' &&
+        Number.isFinite(lineTotal) &&
+        lineTotal >= 0 &&
+        ordered > 0;
+      const unit = hasLineTotal ? (lineTotal as number) / ordered : fallbackUnit;
+
+      acc.receivedQty += received;
+      acc.receivedValue += received * unit;
+      acc.transitValue += remaining * unit;
+      return acc;
+    },
+    { receivedQty: 0, receivedValue: 0, transitValue: 0 },
+  );
+
+  const hasReliableReceivedBreakdown =
+    rowCostBreakdown.receivedQty > 0 &&
+    Math.abs(rowCostBreakdown.receivedQty - quantityOnHand) < 0.0001;
+
+  const onHandValue = hasReliableReceivedBreakdown
+    ? rowCostBreakdown.receivedValue
+    : quantityOnHand * (inventory?.averageCostGBP || 0);
+
+  const totalValue = onHandValue + rowCostBreakdown.transitValue;
+  const displayUnitPrice = totalStockForValue > 0 ? totalValue / totalStockForValue : 0;
   const isLongProductName = (product.name || '').length > 40;
 
   return (
@@ -590,16 +628,16 @@ export default function ProductHistoryPage() {
             <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-4">Product Information</h2>
             
             {/* Large product image - Sortly style */}
-            <div className="flex-1 flex flex-col justify-center mb-4">
-              <div className="flex justify-center h-full">
-                <div className="relative w-full h-full min-h-[200px] sm:min-h-[320px] rounded-lg overflow-hidden border border-stone-200 bg-[#f9f9f8]">
+            <div className="mb-4">
+              <div className="flex justify-center">
+                <div className="relative w-full h-[220px] sm:h-[280px] md:h-[340px] rounded-lg overflow-hidden border border-stone-200 bg-[#f9f9f8]">
                   {editing ? (
                     editForm.imageUrl.trim() ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={editForm.imageUrl}
                         alt={editForm.name || product.name || 'Product image'}
-                        className="h-full w-full object-contain"
+                        className="h-full w-full object-contain p-2"
                       />
                     ) : (
                       <div className="h-full w-full bg-gradient-to-br from-stone-100 to-stone-200 dark:from-stone-700 dark:to-stone-600 flex items-center justify-center text-4xl font-bold text-stone-600 dark:text-stone-300 uppercase">
@@ -611,7 +649,7 @@ export default function ProductHistoryPage() {
                     <img
                       src={product.imageUrl}
                       alt={product.name || 'Product image'}
-                      className="h-full w-full object-contain"
+                      className="h-full w-full object-contain p-2"
                     />
                   ) : (
                     <div className="h-full w-full bg-gradient-to-br from-stone-100 to-stone-200 dark:from-stone-700 dark:to-stone-600 flex items-center justify-center text-4xl font-bold text-stone-600 dark:text-stone-300 uppercase">
@@ -669,7 +707,7 @@ export default function ProductHistoryPage() {
               </div>
               <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
                 <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">Price/unit</p>
-                <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">£{(inventory?.averageCostGBP || 0).toFixed(2)}</p>
+                <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">£{displayUnitPrice.toFixed(2)}</p>
               </div>
               <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
                 <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">Total value</p>

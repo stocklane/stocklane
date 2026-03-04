@@ -77,6 +77,7 @@ export default function ViewDataPage() {
     invoiceDate: '',
     currency: 'USD',
     paymentTerms: '',
+    notes: '',
   });
   const [editingLines, setEditingLines] = useState<POLine[]>([]);
   const [saving, setSaving] = useState(false);
@@ -210,13 +211,17 @@ export default function ViewDataPage() {
     return `£${amount.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GBP`;
   };
 
+  const getPOSortDate = (po: PurchaseOrder) => {
+    return new Date(po.createdAt).getTime();
+  };
+
   const groupPOsByMonth = () => {
     if (!data) return {};
 
     const grouped: { [key: string]: PurchaseOrder[] } = {};
 
     data.purchaseOrders.forEach(po => {
-      const date = po.invoiceDate || po.createdAt;
+      const date = po.createdAt;
       const monthYear = new Date(date).toLocaleDateString('en-US', { 
         year: 'numeric', 
         month: 'long' 
@@ -228,10 +233,13 @@ export default function ViewDataPage() {
       grouped[monthYear].push(po);
     });
 
-    // Sort by date (most recent first)
+    Object.keys(grouped).forEach((key) => {
+      grouped[key] = grouped[key].sort((a, b) => getPOSortDate(b) - getPOSortDate(a));
+    });
+
+    // Sort by import date (most recent first)
     return Object.keys(grouped)
-      .sort((a, b) => new Date(grouped[b][0].invoiceDate || grouped[b][0].createdAt).getTime() - 
-                      new Date(grouped[a][0].invoiceDate || grouped[a][0].createdAt).getTime())
+      .sort((a, b) => getPOSortDate(grouped[b][0]) - getPOSortDate(grouped[a][0]))
       .reduce((acc, key) => {
         acc[key] = grouped[key];
         return acc;
@@ -353,11 +361,23 @@ export default function ViewDataPage() {
       invoiceDate: po.invoiceDate || '',
       currency: po.currency,
       paymentTerms: po.paymentTerms || '',
+      notes: po.notes || '',
     });
   };
 
   const handleSave = async () => {
     if (!editingPO) return;
+
+    const previousNotes = (editingPO.notes || '').trim();
+    const nextNotes = (editFormData.notes || '').trim();
+    if (previousNotes && !nextNotes) {
+      const confirmed = window.confirm(
+        'This will remove the existing note from this purchase order. Continue?',
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
 
     setSaving(true);
     try {
@@ -605,15 +625,18 @@ export default function ViewDataPage() {
   };
 
   const handleShowNotes = (po: PurchaseOrder) => {
-    if (po.notes && po.notes.trim()) {
-      setSelectedNotes({
-        poId: po.id,
-        notes: po.notes,
-        supplierName: getSupplierName(po.supplierId),
-        invoiceNumber: po.invoiceNumber || 'N/A'
-      });
-      setShowNotesModal(true);
+    if (!po.notes || !po.notes.trim()) {
+      handleEdit(po);
+      return;
     }
+
+    setSelectedNotes({
+      poId: po.id,
+      notes: po.notes,
+      supplierName: getSupplierName(po.supplierId),
+      invoiceNumber: po.invoiceNumber || 'N/A'
+    });
+    setShowNotesModal(true);
   };
 
   const handleCloseNotesModal = () => {
@@ -707,7 +730,9 @@ export default function ViewDataPage() {
             {loading ? (
               <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
             ) : (
-              <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">{(data?.transit.filter(t => t.remainingQuantity > 0).reduce((sum, t) => sum + t.remainingQuantity, 0) || 0).toLocaleString()}</p>
+              <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
+                {(data?.purchaseOrders.filter((po) => getPOStatus(po.id) === 'in_transit').length || 0).toLocaleString()}
+              </p>
             )}
           </button>
 
@@ -724,7 +749,9 @@ export default function ViewDataPage() {
             {loading ? (
               <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
             ) : (
-              <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">{(data?.purchaseOrders.filter(po => data.transit.filter(t => t.purchaseOrderId === po.id).length > 0 && data.transit.filter(t => t.purchaseOrderId === po.id).every(t => t.status === 'received')).length || 0).toLocaleString()}</p>
+              <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
+                {(data?.purchaseOrders.filter((po) => getPOStatus(po.id) === 'received').length || 0).toLocaleString()}
+              </p>
             )}
           </button>
         </div>
@@ -813,17 +840,15 @@ export default function ViewDataPage() {
                           <p className="text-stone-400 dark:text-stone-500 text-[10px] sm:text-sm">Total (GBP)</p>
                         </div>
                         <div className="flex gap-1 sm:gap-2">
-                          {po.notes && po.notes.trim() && (
-                            <button
-                              onClick={() => handleShowNotes(po)}
-                              className="border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 p-2 rounded-lg transition-colors"
-                              title="View Notes"
-                            >
-                              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                            </button>
-                          )}
+                          <button
+                            onClick={() => handleShowNotes(po)}
+                            className="border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 p-2 rounded-lg transition-colors"
+                            title={po.notes && po.notes.trim() ? 'View Notes' : 'Add Note'}
+                          >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                          </button>
                           <button
                             onClick={() => handleEdit(po)}
                             className="border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 p-2 rounded-lg transition-colors"
@@ -1203,6 +1228,19 @@ export default function ViewDataPage() {
                         onChange={(e) => setEditFormData(prev => ({ ...prev, paymentTerms: e.target.value }))}
                         className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-[#f9f9f8] dark:bg-stone-800"
                         placeholder="e.g., Net 30, Due on Receipt"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-stone-600 dark:text-stone-400 mb-1">
+                        Notes
+                      </label>
+                      <textarea
+                        value={editFormData.notes}
+                        onChange={(e) => setEditFormData(prev => ({ ...prev, notes: e.target.value }))}
+                        rows={4}
+                        className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-[#f9f9f8] dark:bg-stone-800 resize-y"
+                        placeholder="Add internal notes for this purchase order"
                       />
                     </div>
                   </div>

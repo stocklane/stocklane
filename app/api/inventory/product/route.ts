@@ -3,6 +3,7 @@ import { requireAuth } from '@/lib/auth-helpers';
 import { deleteProductAndInventory } from '@/lib/db';
 import { applyRateLimit } from '@/lib/rate-limit';
 import { isValidUUID } from '@/lib/validation';
+import { clearCache } from '@/lib/cache';
 
 // GET product + inventory + transit history for /inventory/[productId]
 export async function GET(request: NextRequest) {
@@ -174,6 +175,19 @@ export async function GET(request: NextRequest) {
         };
       });
 
+    // Prefer the PO line unit cost (editable) over transit.unitcostgbp, which can become stale.
+    const resolveUnitCost = (transitRow: any, poLine: any): number => {
+      const poLineUnit = Number(poLine?.unitCostExVAT);
+      if (Number.isFinite(poLineUnit) && poLineUnit >= 0) {
+        return poLineUnit;
+      }
+      const transitUnit = Number(transitRow?.unitcostgbp);
+      if (Number.isFinite(transitUnit) && transitUnit >= 0) {
+        return transitUnit;
+      }
+      return 0;
+    };
+
     // Derive an expected average unit cost from on-hand + current POs (transit)
     const remainingTransit = transitRows.filter(
       (t: any) => Number(t.remainingquantity ?? 0) > 0,
@@ -191,16 +205,7 @@ export async function GET(request: NextRequest) {
 
         const poLine = poLinesById.get(t.polineid) || null;
 
-        let rawUnitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(rawUnitCost) || rawUnitCost <= 0) {
-          rawUnitCost = Number(
-            poLine && typeof poLine.unitCostExVAT === 'number'
-              ? poLine.unitCostExVAT
-              : 0,
-          );
-        }
-
-        const unitCost = Number.isFinite(rawUnitCost) && rawUnitCost >= 0 ? rawUnitCost : 0;
+        const unitCost = resolveUnitCost(t, poLine);
 
         blendedTotalQty += qty;
         blendedTotalCost += qty * unitCost;
@@ -222,10 +227,7 @@ export async function GET(request: NextRequest) {
         if (!Number.isFinite(qty) || qty <= 0) continue;
 
         const poLine = poLinesById.get(t.polineid) || null;
-        let unitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(unitCost) || unitCost <= 0) {
-          unitCost = poLine ? Number(poLine.unitCostExVAT ?? 0) : 0;
-        }
+        const unitCost = resolveUnitCost(t, poLine);
         if (!Number.isFinite(unitCost) || unitCost <= 0) continue;
 
         fallbackTotalQty += qty;
@@ -379,9 +381,12 @@ export async function PUT(request: NextRequest) {
       supplierId: updatedRow.supplierid ?? null,
       category: updatedRow.category ?? null,
       tags: updatedRow.tags ?? [],
+      imageUrl: updatedRow.imageurl ?? null,
       createdAt: updatedRow.created_at,
       updatedAt: updatedRow.updated_at,
     }
+
+    clearCache(`inventory_snapshot_v1_${user.id}`);
     return NextResponse.json({ success: true, data: { product } });
   } catch (error) {
     console.error('Update product error:', error);
@@ -465,6 +470,8 @@ export async function POST(request: NextRequest) {
       updatedAt: newProduct.updated_at,
     };
 
+    clearCache(`inventory_snapshot_v1_${user.id}`);
+
     return NextResponse.json({ success: true, data: { product } });
   } catch (error) {
     console.error('Create product error:', error);
@@ -505,6 +512,8 @@ export async function DELETE(request: NextRequest) {
     }
 
     const result = await deleteProductAndInventory(id);
+
+    clearCache(`inventory_snapshot_v1_${user.id}`);
 
     return NextResponse.json({
       success: true,

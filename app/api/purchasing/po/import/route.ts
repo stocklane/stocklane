@@ -52,6 +52,9 @@ Rules:
 - **CRITICAL: If the invoice is NOT in GBP, you MUST convert ALL monetary values (unitCostExVAT, lineTotalExVAT, subTotalExVAT, vatTotal, grandTotal) to GBP using current exchange rates.**
 - Store the original currency in "originalCurrency" field.
 - After conversion, all prices should be in GBP.
+- If both unit price and line total are visible, treat line total as authoritative and ensure:
+  unitCostExVAT = lineTotalExVAT / quantity (rounded to 2dp).
+- If unitCostExVAT * quantity conflicts with lineTotalExVAT, correct unitCostExVAT from lineTotalExVAT.
 - If a field is missing, return null.
 - Merge lines across multiple pages.
 
@@ -81,6 +84,40 @@ interface ExtractedData {
     lineTotalExVAT: number;
   }>;
   totals: Totals;
+}
+
+function roundMoney(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function normalizeLineMath(lines: ExtractedData['poLines']): ExtractedData['poLines'] {
+  return (lines || []).map((line) => {
+    const quantity = typeof line.quantity === 'number' && line.quantity > 0 ? line.quantity : 0;
+    let unitCostExVAT = typeof line.unitCostExVAT === 'number' ? line.unitCostExVAT : 0;
+    let lineTotalExVAT = typeof line.lineTotalExVAT === 'number' ? line.lineTotalExVAT : 0;
+
+    if (quantity > 0) {
+      if (lineTotalExVAT > 0 && unitCostExVAT <= 0) {
+        unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+      } else if (unitCostExVAT > 0 && lineTotalExVAT <= 0) {
+        lineTotalExVAT = roundMoney(unitCostExVAT * quantity);
+      } else if (unitCostExVAT > 0 && lineTotalExVAT > 0) {
+        const expectedTotal = roundMoney(unitCostExVAT * quantity);
+        const diff = Math.abs(expectedTotal - lineTotalExVAT);
+        const tolerance = Math.max(0.1, roundMoney(lineTotalExVAT * 0.01));
+        if (diff > tolerance) {
+          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+        }
+      }
+    }
+
+    return {
+      ...line,
+      quantity,
+      unitCostExVAT: roundMoney(Math.max(0, unitCostExVAT)),
+      lineTotalExVAT: roundMoney(Math.max(0, lineTotalExVAT)),
+    };
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -218,6 +255,8 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    extractedData.poLines = normalizeLineMath(extractedData.poLines);
 
     // 7. Save to lowdb database
     try {
