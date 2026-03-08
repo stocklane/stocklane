@@ -39,7 +39,8 @@ export async function POST(request: NextRequest) {
       supplierName,
       invoiceNumber || null,
       invoiceDate || null,
-      poLines
+      poLines,
+      user.id
     );
 
     return NextResponse.json({

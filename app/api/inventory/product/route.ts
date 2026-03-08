@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 2) Load related entities in parallel
-    const [inventoryRes, supplierRes, transitRes, poLinesRes, purchaseOrdersRes, invoicesRes] =
+    const [inventoryRes, supplierRes, transitRes, poLinesRes, purchaseOrdersRes, invoicesRes, integrationsRes] =
       await Promise.all([
         supabase.from('inventory').select('*').eq('productid', id),
         productRow.supplierid
@@ -47,6 +47,7 @@ export async function GET(request: NextRequest) {
         supabase.from('polines').select('*'),
         supabase.from('purchaseorders').select('*'),
         supabase.from('invoices').select('*'),
+        supabase.from('product_integrations').select('*').eq('product_id', id),
       ]);
 
     const inventoryRows = inventoryRes.data || [];
@@ -55,6 +56,13 @@ export async function GET(request: NextRequest) {
     const poLineRows = poLinesRes.data || [];
     const poRows = purchaseOrdersRes.data || [];
     const invoiceRows = invoicesRes.data || [];
+    const integrationRows = integrationsRes.data || [];
+
+    const integrations = integrationRows.map((i: any) => ({
+      platform: i.platform,
+      externalProductId: i.external_product_id,
+      externalVariantId: i.external_variant_id,
+    }));
 
     // Map product to camelCase DTO
     const product = {
@@ -257,6 +265,7 @@ export async function GET(request: NextRequest) {
         inventory,
         supplier,
         transit,
+        integrations,
       },
     });
   } catch (error) {

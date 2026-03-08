@@ -19,8 +19,8 @@ export async function POST(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
 
-    // SECURITY: Rate limit – sync is expensive, allow 10 requests/min
-    const blocked = applyRateLimit(request, user.id, { limit: 10, windowMs: 60_000 });
+    // SECURITY: Rate limit – sync is expensive, allow 30 requests/min
+    const blocked = applyRateLimit(request, user.id, { limit: 30, windowMs: 60_000 });
     if (blocked) return blocked;
 
     // Get the user's Shopify credentials

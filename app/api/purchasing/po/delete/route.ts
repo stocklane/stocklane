@@ -23,11 +23,12 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Check if PO exists
+    // Check if PO exists and belongs to the user
     const { data: po, error: fetchError } = await supabase
       .from('purchaseorders')
       .select('*')
       .eq('id', poId)
+      .eq('user_id', user.id)
       .single();
 
     if (fetchError || !po) {
@@ -47,13 +48,36 @@ export async function DELETE(request: NextRequest) {
       .select('*', { count: 'exact', head: true })
       .eq('purchaseorderid', poId);
 
+    // CRITICAL WORKAROUND: There is a misconfigured database schema/trigger that
+    // erroneously cascade-deletes the linked "supplier" when a "purchaseorder" is deleted.
+    // If we sever the link before deleting, it saves the supplier from destruction 
+    // and prevents the 409 Foreign Key violation on "products".
+    await supabase
+      .from('purchaseorders')
+      .update({ supplierid: null })
+      .eq('id', poId)
+      .eq('user_id', user.id);
+
     // Delete the purchase order (cascade will handle line items)
     const { error: deleteError } = await supabase
       .from('purchaseorders')
       .delete()
-      .eq('id', poId);
+      .eq('id', poId)
+      .eq('user_id', user.id);
 
     if (deleteError) {
+      console.error('Delete error from Supabase:', deleteError);
+      
+      if (deleteError.code === '23503') {
+        return NextResponse.json(
+          { 
+            error: 'Cannot delete purchase order because it is linked to other active records (e.g. products or suppliers).', 
+            details: deleteError.message 
+          },
+          { status: 409 }
+        );
+      }
+
       return NextResponse.json(
         { error: 'Failed to delete purchase order' },
         { status: 500 }

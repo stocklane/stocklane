@@ -1,4 +1,5 @@
 import { serverSupabase as supabase } from './supabase-server';
+import { syncShopifyInventory, pushDraftProductToShopify, updateShopifyPrice } from './shopify/actions';
 
 // Define the database schema types
 export interface Supplier {
@@ -309,6 +310,12 @@ export async function deleteProductAndInventory(productId: string): Promise<{
 }
 
 // New inventory and product types
+export interface ProductIntegration {
+  platform: string;
+  externalProductId: string;
+  externalVariantId: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -320,6 +327,7 @@ export interface Product {
   category: string | null;
   tags: string[];
   imageUrl: string | null;
+  integrations?: ProductIntegration[];
   createdAt: string;
   updatedAt: string;
 }
@@ -421,10 +429,41 @@ export interface Task {
   completedAt: string | null;
 }
 
+export interface ActivityLog {
+  id: string;
+  user_id: string;
+  type: string;
+  message: string;
+  metadata: any;
+  is_read: boolean;
+  created_at: string;
+}
+
 export interface InventoryItemView {
   product: Product;
   inventory: InventoryRecord | null;
   quantityInTransit: number;
+}
+
+// Helper function to log activity
+export async function logActivity(params: {
+  userId: string;
+  type: string;
+  message: string;
+  metadata?: any;
+}): Promise<void> {
+  const { error } = await supabase
+    .from('activity_log')
+    .insert({
+      user_id: params.userId,
+      type: params.type,
+      message: params.message,
+      metadata: params.metadata || {},
+    });
+
+  if (error) {
+    console.error('Failed to log activity:', error.message);
+  }
 }
 
 // Updated database schema including inventory-related collections
@@ -437,6 +476,7 @@ export interface DatabaseSchema {
   transit: TransitRecord[];
   invoices: Invoice[];
   tasks: Task[];
+  activity_log: ActivityLog[];
 }
 
 
@@ -454,16 +494,19 @@ export async function findDuplicatePurchaseOrders(
   supplierName: string,
   invoiceNumber: string | null,
   invoiceDate: string | null,
-  poLines: Array<{ description: string; quantity: number; unitCostExVAT: number }>
+  poLines: Array<{ description: string; quantity: number; unitCostExVAT: number }>,
+  userId: string
 ): Promise<DuplicateMatch[]> {
   const duplicates: DuplicateMatch[] = [];
 
-  // Find supplier by name (case-insensitive)
+  // Find supplier by name (case-insensitive) for this user
   const { data: supplier } = await supabase
     .from('suppliers')
     .select('*')
     .ilike('name', supplierName)
-    .single();
+    .eq('user_id', userId)
+    .limit(1)
+    .maybeSingle();
 
   if (!supplier) {
     // No supplier found, so no duplicates possible
@@ -471,10 +514,12 @@ export async function findDuplicatePurchaseOrders(
   }
 
   // Get all purchase orders for this supplier
+  // We explicitly check user_id on purchaseorders too just in case supplier.id is shared somehow
   const { data: supplierPOs } = await supabase
     .from('purchaseorders')
     .select('*')
-    .eq('supplierid', supplier.id);
+    .eq('supplierid', supplier.id)
+    .eq('user_id', userId);
 
   if (!supplierPOs) return [];
 
@@ -483,14 +528,14 @@ export async function findDuplicatePurchaseOrders(
     let matchScore = 0;
 
     // Check invoice number match (strong indicator)
-    if (invoiceNumber && po.invoicenumber &&
+    if (invoiceNumber && po.invoicenumber && invoiceNumber.trim() !== '' && po.invoicenumber.trim() !== '' &&
         invoiceNumber.toLowerCase() === po.invoicenumber.toLowerCase()) {
       matchReasons.push('Same invoice number');
       matchScore += 50;
     }
 
     // Check invoice date match
-    if (invoiceDate && po.invoicedate && invoiceDate === po.invoicedate) {
+    if (invoiceDate && po.invoicedate && invoiceDate.trim() !== '' && po.invoicedate.trim() !== '' && invoiceDate === po.invoicedate) {
       matchReasons.push('Same invoice date');
       matchScore += 20;
     }
@@ -564,9 +609,9 @@ function computeTokenSimilarity(aTokens: string[], bTokens: string[]): number {
   const aSet = new Set(aTokens);
   const bSet = new Set(bTokens);
   let intersection = 0;
-  for (const token of aSet) {
+  aSet.forEach((token) => {
     if (bSet.has(token)) intersection++;
-  }
+  });
   const union = new Set([...aTokens, ...bTokens]).size;
   return union === 0 ? 0 : intersection / union;
 }
@@ -588,7 +633,8 @@ export async function syncInventoryFromPurchaseOrder(params: {
 
   const { data: products } = await supabase
     .from('products')
-    .select('*');
+    .select('*')
+    .eq('user_id', params.user_id);
 
   if (!products) {
     throw new Error('Failed to fetch products');
@@ -606,13 +652,13 @@ export async function syncInventoryFromPurchaseOrder(params: {
     let matchedProduct: Product | null = null;
     if (supplierSku) {
       const skuLower = supplierSku.toLowerCase();
-      matchedProduct =
-        products.find(
-          (p) =>
-            p.primarySku?.toLowerCase() === skuLower ||
-            p.supplierSku?.toLowerCase() === skuLower ||
-            (p.barcodes || []).some((code: string) => code.toLowerCase() === skuLower)
-        ) || null;
+      matchedProduct = (products as any[]).find(p => {
+        // Handle both camelCase from interface and snake_case from DB
+        const pSku = (p.primarysku || p.primarySku || '').toLowerCase();
+        const sSku = (p.suppliersku || p.supplierSku || '').toLowerCase();
+        const barcodes = p.barcodes || [];
+        return pSku === skuLower || sSku === skuLower || barcodes.some((b: string) => b.toLowerCase() === skuLower);
+      }) || null;
     }
 
     // 2. Fuzzy match on description if no SKU match
@@ -634,13 +680,23 @@ export async function syncInventoryFromPurchaseOrder(params: {
         }
 
         if (score > bestScore) {
-          bestScore = score;
-          matchedProduct = candidate;
+          // STRICT RULE: If both have SKUs and they are different, NEVER match fuzzy
+          const candPSku = (candidate.primarysku || (candidate as any).primarySku || '').toLowerCase();
+          const candSSku = (candidate.suppliersku || (candidate as any).supplierSku || '').toLowerCase();
+          
+          const skuLower = (supplierSku || '').toLowerCase();
+          const hasDifferentSku = skuLower && (candPSku || candSSku) && 
+                                (candPSku !== skuLower && candSSku !== skuLower);
+
+          if (!hasDifferentSku) {
+            bestScore = score;
+            matchedProduct = candidate;
+          }
         }
       }
 
-      // Require a reasonable similarity threshold to avoid bad matches
-      if (bestScore < 0.5) {
+      // Require a high similarity threshold to avoid bad matches (like different variants of the same set)
+      if (bestScore < 0.7) {
         matchedProduct = null;
       }
     }
@@ -690,7 +746,17 @@ export async function syncInventoryFromPurchaseOrder(params: {
         console.error('Failed to create product:', insertError?.message || 'Unknown error');
         continue;
       }
-      products.push(newProduct);
+      products.push({
+        ...newProduct,
+        id: newProduct.id,
+        name: newProduct.name,
+        primarySku: newProduct.primarysku,
+        supplierSku: newProduct.suppliersku,
+        barcodes: newProduct.barcodes || [],
+        aliases: newProduct.aliases || [],
+        supplierId: newProduct.supplierid,
+        user_id: newProduct.user_id,
+      } as any);
       productsCreated++;
       product = newProduct;
     }
@@ -724,6 +790,22 @@ export async function syncInventoryFromPurchaseOrder(params: {
       continue;
     }
     transitCreated++;
+  }
+
+  // Log the import activity
+  if (params.poLines.length > 0) {
+    await logActivity({
+      userId: params.user_id,
+      type: 'import',
+      message: `Imported ${params.poLines.length} line items for PO ${params.purchaseOrderId}`,
+      metadata: {
+        purchaseOrderId: params.purchaseOrderId,
+        supplierId: params.supplierId,
+        productsCreated,
+        productsMatched,
+        transitCreated,
+      },
+    });
   }
 
   return {
@@ -887,8 +969,9 @@ export async function receiveStockForProduct(params: {
   productId: string;
   quantity: number;
   poLineId?: string;
+  user_id?: string;
 }): Promise<ReceiveStockResult> {
-  const { productId, quantity, poLineId } = params;
+  const { productId, quantity, poLineId, user_id } = params;
 
   if (!productId) {
     throw new Error('productId is required');
@@ -927,6 +1010,7 @@ export async function receiveStockForProduct(params: {
         productid: productId,
         quantityonhand: 0,
         averagecostgbp: 0,
+        ...(user_id ? { user_id } : {}),
       })
       .select()
       .single();
@@ -1021,6 +1105,65 @@ export async function receiveStockForProduct(params: {
       lastupdated: now,
     })
     .eq('id', inventoryRecord.id);
+
+  // --- SHOPIFY SYNC & LINK ENGINE ---
+  try {
+    const { data: integration } = await supabase
+      .from('product_integrations')
+      .select('*')
+      .eq('product_id', productId)
+      .eq('platform', 'shopify')
+      .maybeSingle();
+
+    if (integration) {
+      // 1. Sync Inventory to Shopify
+      if (receivedQuantity !== 0 && integration.external_inventory_item_id) {
+        await syncShopifyInventory(integration.external_inventory_item_id, receivedQuantity, product.user_id);
+      }
+      
+      // 2. Push Price if Greenlighted (Margin Engine)
+      if (product.pricing_greenlight && product.target_margin) {
+        const targetMarginPct = Number(product.target_margin);
+        if (targetMarginPct > 0 && targetMarginPct < 100) {
+          // Calculate new price based on WAC and Target Margin
+          // Price = Cost / (1 - Margin/100)
+          const newPrice = newAvg / (1 - (targetMarginPct / 100));
+          const formattedPrice = newPrice.toFixed(2);
+          
+          if (integration.external_variant_id) {
+            await updateShopifyPrice(integration.external_variant_id, formattedPrice, product.user_id);
+          }
+        }
+      }
+    } else {
+      // 3. Draft Push: Product doesn't exist on Shopify, so create it
+      // Ensure SKU exists
+      let sku = product.primarysku;
+      if (!sku) {
+        sku = 'SL-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+        await supabase.from('products').update({ primarysku: sku }).eq('id', productId);
+      }
+      
+      const newShopifyIds = await pushDraftProductToShopify(product, sku, product.user_id);
+      
+      // Save the new link
+      await supabase.from('product_integrations').insert({
+        product_id: productId,
+        platform: 'shopify',
+        external_product_id: newShopifyIds.productId,
+        external_variant_id: newShopifyIds.variantId,
+        external_inventory_item_id: newShopifyIds.inventoryItemId
+      });
+      
+      // Push the inventory to the newly created item
+      if (receivedQuantity !== 0) {
+         await syncShopifyInventory(newShopifyIds.inventoryItemId, receivedQuantity, product.user_id);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to sync receiving event to Shopify:', err);
+    // We do not throw here to prevent rolling back the local StockLane receiving if Shopify fails
+  }
 
   return {
     productId,

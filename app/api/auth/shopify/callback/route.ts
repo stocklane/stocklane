@@ -123,9 +123,9 @@ export async function GET(request: NextRequest) {
       return redirectWithError(request, 'Failed to save Shopify credentials');
     }
 
-    // Redirect back to account page with success
+    // Redirect back to shopify sync preview page with success
     const baseUrl = getBaseUrl(request);
-    return NextResponse.redirect(`${baseUrl}/account?shopify=connected`);
+    return NextResponse.redirect(`${baseUrl}/inventory/shopify-sync`);
   } catch (error) {
     console.error('Shopify callback error:', error);
     return redirectWithError(request, 'An unexpected error occurred');

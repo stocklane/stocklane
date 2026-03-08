@@ -109,48 +109,27 @@ Exchange rates the SERVER will use to convert TO GBP (for your reference ONLY, d
 - Always output all monetary values (unit costs, line totals, subtotal, extras, VAT, total) in the ORIGINAL invoice currency.
 - The server will use the originalCurrency and the exchange rates above to convert everything to GBP.
 
-**SKU/Item Code Extraction (VERY IMPORTANT):**
-- Look for product codes in a dedicated column or field, often labeled: "SKU", "Item #", "Code", "Product Code", "Item Code", "Part #", "Ref", "Article No"
-- SKUs are typically alphanumeric codes like: "TCG-001", "ABC123", "PROD-2024-001", "12345-A"
-- SKUs are usually positioned BEFORE or AFTER the description, in their own column
-- DO NOT extract the quantity as the SKU - quantity is always a simple number (1, 2, 10, etc.)
-- DO NOT extract prices, dates, or invoice numbers as SKUs
-- If you see a column with mixed alphanumeric codes next to descriptions, that's likely the SKU
-- If no clear SKU column exists, leave supplierSku as empty string or null
-- When in doubt, prefer leaving it empty rather than guessing incorrectly
+**PACK SIZE & UNIT EXPANSION (CRITICAL):**
+- You MUST detect if an item contains multiple units (e.g., "12 units at £9.99", "CDU (10)", "Case: 12").
+- Check ALL columns (Description, RRP, Price, Units) for patterns like "X units" or "X items".
+- If you see a pattern like "X units at £Y", then "X" is the pack size and "Y" is the RRP.
+- You MUST multiply the invoice quantity by the pack size "X" to get the total individual units.
+- **IMPORTANT**: Your final "quantity" should represent individual units.
+- **Example**: Invoice says "Quantity: 1" and "12 units at £9.99". Your JSON: quantity: 12, rrp: 9.99, packSize: 12.
+- **Example**: Invoice says "Quantity: 4" and "Description: CDU (10)". Your JSON: quantity: 40, packSize: 10.
+- When you expand quantity, unitCostExVAT MUST be (lineTotal / quantity).
 
 **RRP (Recommended Retail Price) Extraction:**
-- Look for columns labeled: "RRP", "Retail Price", "MSRP", "Recommended Price", "Selling Price", "List Price"
-- RRP is usually higher than the unit cost and represents the suggested selling price
-- Common on distributor invoices, especially for retail goods like trading cards, games, collectibles
-- If multiple price columns exist, RRP is typically the highest price (excluding VAT)
-- If no RRP is clearly indicated, set rrp to null - do NOT guess or use unit cost
-- RRP should be in the same currency as other prices on the invoice
-- Look for text like "RRP:" or "Retail:" followed by a price
+- ONLY extract the numeric currency value (e.g., 9.99).
+- If no RRP price is found, return null.
 
-**UNIT COST vs LINE TOTAL - CRITICAL:**
-- Each line item has a quantity, a unit cost (price per single unit), and a line total (quantity × unit cost).
-- Some invoices only show ONE price per line (not both unit cost and line total).
-- If the table has BOTH a PRICE and TOTAL column, treat TOTAL as authoritative for lineTotalExVAT.
-- In that case, compute unitCostExVAT = lineTotalExVAT / quantity (rounded to 2dp) if needed.
-- If PRICE × quantity conflicts with TOTAL, prefer TOTAL and recompute unitCostExVAT from TOTAL.
-- When only ONE price is shown per line, you MUST determine if it is the unit cost or line total:
-  1. Sum ALL the single prices across all line items.
-  2. Compare that sum to the invoice subtotal/total (ignoring shipping/extras/VAT).
-  3. If the sum of prices ≈ the subtotal/total → the prices are LINE TOTALS. Calculate unit cost = price / quantity.
-  4. If the sum of (price × quantity) ≈ the subtotal/total → the prices are UNIT COSTS. Calculate line total = price × quantity.
-- Example: "5 Widget ¥53,500" with invoice total ≈ sum of all such prices → ¥53,500 is the LINE TOTAL, unit cost = ¥53,500 / 5 = ¥10,700.
-- ALWAYS verify: the sum of all lineTotalExVAT values should approximately equal the subtotal.
+**SKU/Item Code Extraction:**
+- Extract product codes into "supplierSku". Do NOT use quantity or price as SKU.
 
-**Other Important Rules:**
-- If multiple files/pages are provided, they are ALL part of the SAME invoice/order - combine all data
-- Extract ALL line items from ALL documents/pages
-- **EXTRAS field**: Extract shipping, delivery, handling, freight, postage charges here (NOT part of poLines). Set to 0 if none.
-- **SUBTOTAL**: Sum of all line items BEFORE extras and VAT
-- **TOTAL**: subtotal + extras + VAT
-- If a field is not present, use null or empty string (use 0 for numeric fields like extras)
-- Ensure all numbers are numeric values, not strings
-- Combine line items from all pages into a single poLines array`;
+**Totals:**
+- Extract subtotal, extras (shipping), VAT, and grand total.
+
+Combine all pages. Return ONLY valid JSON.`;
 }
 
 interface ExtractedData {
@@ -171,8 +150,10 @@ interface ExtractedData {
     description: string;
     supplierSku?: string;
     quantity: number;
+    packSize?: number | null;
     unitCostExVAT: number;
     lineTotalExVAT: number;
+    rrp?: number | null;
   }>;
   totals: {
     subtotal: number;
@@ -196,24 +177,54 @@ function parseMoney(value: unknown): number {
 
 function normalizeLineMath(extractedData: ExtractedData): void {
   extractedData.poLines = (extractedData.poLines || []).map((line) => {
-    const quantityRaw = parseMoney(line.quantity);
-    const quantity = quantityRaw > 0 ? quantityRaw : 0;
+    let quantity = parseMoney(line.quantity);
     let unitCostExVAT = parseMoney(line.unitCostExVAT);
     let lineTotalExVAT = parseMoney(line.lineTotalExVAT);
+    let rrp = typeof line.rrp === 'number' ? line.rrp : null;
+    
+    // --- HEURISTIC SAFETY NET ---
+    const commonMultipliers = [6, 8, 10, 12, 18, 24, 30, 36, 40, 50, 60, 100];
+    const desc = (line.description || '').toLowerCase();
+    const hasPackKeywords = desc.includes('cdu') || desc.includes('box') || desc.includes('pack') || 
+                            desc.includes('display') || desc.includes('units') || desc.includes('(') ||
+                            desc.includes('collection');
+
+    if (rrp !== null && commonMultipliers.includes(rrp) && quantity <= 10 && hasPackKeywords) {
+      if (lineTotalExVAT > 0) {
+        const isTotalPriceInUnit = Math.abs(unitCostExVAT - lineTotalExVAT) < 0.05;
+        if (isTotalPriceInUnit || quantity < rrp) {
+          quantity = quantity * rrp;
+          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+          rrp = null; // Clear multiplier from RRP
+        }
+      }
+    }
+
+    // Force individual unit calculation if packSize was extracted or implied by keywords
+    const pSize = typeof line.packSize === 'number' ? line.packSize : 1;
+    let multiplier = pSize;
+
+    // Special case for "Collection" items which are often 12 units at Esdevium
+    if (multiplier === 1 && desc.includes('collection') && quantity === 1 && lineTotalExVAT > 60) {
+      // If a single 'collection' bundle is > £60, it's almost certainly a box of units
+      // Check if total / 12 ~= common unit price
+      const impliedUnit = lineTotalExVAT / 12;
+      if (impliedUnit > 4 && impliedUnit < 10) {
+        multiplier = 12;
+      }
+    }
+
+    if (multiplier > 1 && quantity < multiplier && quantity > 0 && quantity <= 10) {
+      // AI likely put box count in quantity instead of units
+      quantity = quantity * multiplier;
+      unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+    }
 
     if (quantity > 0) {
-      if (lineTotalExVAT > 0 && unitCostExVAT <= 0) {
+      if (lineTotalExVAT > 0) {
         unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
-      } else if (unitCostExVAT > 0 && lineTotalExVAT <= 0) {
+      } else if (unitCostExVAT > 0) {
         lineTotalExVAT = roundMoney(unitCostExVAT * quantity);
-      } else if (unitCostExVAT > 0 && lineTotalExVAT > 0) {
-        const expectedTotal = roundMoney(unitCostExVAT * quantity);
-        const diff = Math.abs(expectedTotal - lineTotalExVAT);
-        const tolerance = Math.max(0.1, roundMoney(lineTotalExVAT * 0.01));
-        if (diff > tolerance) {
-          // When OCR disagrees, prefer explicit line total and recompute unit.
-          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
-        }
       }
     }
 
@@ -222,6 +233,7 @@ function normalizeLineMath(extractedData: ExtractedData): void {
       quantity,
       unitCostExVAT: roundMoney(Math.max(0, unitCostExVAT)),
       lineTotalExVAT: roundMoney(Math.max(0, lineTotalExVAT)),
+      rrp
     };
   });
 

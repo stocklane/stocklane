@@ -102,6 +102,7 @@ export default function InventoryPage() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [headerScrolled, setHeaderScrolled] = useState(false);
+  const [syncingShopify, setSyncingShopify] = useState(false);
 
   const handleScannedBarcode = (code: string) => {
     const raw = (code || '').trim();
@@ -405,6 +406,26 @@ export default function InventoryPage() {
       setError(err instanceof Error ? err.message : 'Failed to load inventory');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleShopifySync = async () => {
+    try {
+      setSyncingShopify(true);
+      setError(null);
+      const res = await authenticatedFetch('/api/inventory/shopify-sync', {
+        method: 'POST',
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || 'Failed to sync with Shopify. Make sure it is connected in Account settings.');
+      }
+      showToast(json.message || 'Shopify sync complete');
+      await handleRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync with Shopify');
+    } finally {
+      setSyncingShopify(false);
     }
   };
 
@@ -766,6 +787,14 @@ export default function InventoryPage() {
               </svg>
               <span className="hidden sm:inline">Import CSV</span>
             </a>
+            <a
+              href="/inventory/shopify-sync"
+              title="Sync Shopify Catalog & Inventory"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 border border-stone-200 dark:border-stone-700 text-sm font-medium rounded-md text-stone-700 dark:text-stone-300 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-600 transition-colors"
+            >
+              <img src="/Shopify_icon.svg" className="w-4 h-4 flex-shrink-0" alt="Shopify" />
+              <span className="hidden sm:inline">Sync Shopify</span>
+            </a>
             <button
               onClick={exportInventoryCSV}
               disabled={visibleItems.length === 0}
@@ -798,215 +827,119 @@ export default function InventoryPage() {
 
         {/* Stats - collapsible on mobile when scrolled */}
         <div className={`transition-all duration-300 ease-in-out sm:block ${headerScrolled ? 'max-h-0 overflow-hidden opacity-0 sm:max-h-none sm:overflow-visible sm:opacity-100 -mt-3 sm:mt-0' : 'max-h-56 overflow-visible opacity-100'}`}>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 px-0.5 pb-0.5">
-              <button
-                type="button"
-                onClick={() => setStockFilter('all')}
-                className={`flex flex-col justify-between rounded-xl border p-3 sm:p-4 text-left transition-all shadow-sm ${
-                  stockFilter === 'all'
-                    ? 'border-amber-600 bg-amber-50 dark:bg-amber-900/20 scale-[1.02]'
-                    : 'bg-stone-50 dark:bg-stone-800 border-stone-200 dark:border-stone-700 hover:border-amber-600'
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 px-0.5 pb-0.5">
+            <button
+              type="button"
+              onClick={() => setStockFilter('all')}
+              className={`flex flex-col justify-between rounded-xl border p-3 sm:p-4 text-left transition-all shadow-sm ${stockFilter === 'all'
+                ? 'border-amber-600 bg-amber-50 dark:bg-amber-900/20 scale-[1.02]'
+                : 'bg-stone-50 dark:bg-stone-800 border-stone-200 dark:border-stone-700 hover:border-amber-600'
                 }`}
-              >
-                <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">Products</p>
-                {loading ? (
-                  <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
-                ) : (
-                  <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">{items.length.toLocaleString()}</p>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => setStockFilter('onHand')}
-                className={`flex flex-col justify-between rounded-xl border p-3 sm:p-4 text-left transition-all shadow-sm ${
-                  stockFilter === 'onHand'
-                    ? 'border-amber-600 bg-amber-50 dark:bg-amber-900/20 scale-[1.02]'
-                    : 'bg-stone-50 dark:bg-stone-800 border-stone-200 dark:border-stone-700 hover:border-amber-600'
+            >
+              <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">Products</p>
+              {loading ? (
+                <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
+              ) : (
+                <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">{items.length.toLocaleString()}</p>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setStockFilter('onHand')}
+              className={`flex flex-col justify-between rounded-xl border p-3 sm:p-4 text-left transition-all shadow-sm ${stockFilter === 'onHand'
+                ? 'border-amber-600 bg-amber-50 dark:bg-amber-900/20 scale-[1.02]'
+                : 'bg-stone-50 dark:bg-stone-800 border-stone-200 dark:border-stone-700 hover:border-amber-600'
                 }`}
-              >
-                <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">In Hand</p>
-                {loading ? (
-                  <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
-                ) : (
-                  <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
-                    £{items.reduce(
-                      (sum, row) => sum + ((row.inventory?.quantityOnHand || 0) * (row.inventory?.averageCostGBP || 0)),
-                      0
-                    ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </p>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => setStockFilter('inTransit')}
-                className={`flex flex-col justify-between rounded-xl border p-3 sm:p-4 text-left transition-all shadow-sm ${
-                  stockFilter === 'inTransit'
-                    ? 'border-amber-600 bg-amber-50 dark:bg-amber-900/20 scale-[1.02]'
-                    : 'bg-stone-50 dark:bg-stone-800 border-stone-200 dark:border-stone-700 hover:border-amber-600'
+            >
+              <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">In Hand</p>
+              {loading ? (
+                <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
+              ) : (
+                <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
+                  £{items.reduce(
+                    (sum, row) => sum + ((row.inventory?.quantityOnHand || 0) * (row.inventory?.averageCostGBP || 0)),
+                    0
+                  ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setStockFilter('inTransit')}
+              className={`flex flex-col justify-between rounded-xl border p-3 sm:p-4 text-left transition-all shadow-sm ${stockFilter === 'inTransit'
+                ? 'border-amber-600 bg-amber-50 dark:bg-amber-900/20 scale-[1.02]'
+                : 'bg-stone-50 dark:bg-stone-800 border-stone-200 dark:border-stone-700 hover:border-amber-600'
                 }`}
-              >
-                <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">In Transit</p>
-                {loading ? (
-                  <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
-                ) : (
-                  <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
-                    £{items.reduce((sum, row) => sum + ((row.quantityInTransit || 0) * (row.inventory?.averageCostGBP || 0)), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </p>
-                )}
-              </button>
-              <div className="flex flex-col justify-between bg-stone-50 dark:bg-stone-800 rounded-xl border border-stone-200 dark:border-stone-700 p-3 sm:p-4 text-left shadow-sm">
-                <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">Total Value</p>
-                {loading ? (
-                  <div className="h-6 sm:h-7 w-24 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
-                ) : (
-                  <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
-                    £{items.reduce(
-                      (sum, row) => sum + (((row.inventory?.quantityOnHand || 0) + (row.quantityInTransit || 0)) * (row.inventory?.averageCostGBP || 0)),
-                      0
-                    ).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </p>
-                )}
-              </div>
-        </div>
+            >
+              <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">In Transit</p>
+              {loading ? (
+                <div className="h-6 sm:h-7 w-12 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
+              ) : (
+                <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
+                  £{items.reduce((sum, row) => sum + ((row.quantityInTransit || 0) * (row.inventory?.averageCostGBP || 0)), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+              )}
+            </button>
+            <div className="flex flex-col justify-between bg-stone-50 dark:bg-stone-800 rounded-xl border border-stone-200 dark:border-stone-700 p-3 sm:p-4 text-left shadow-sm">
+              <p className="text-[10px] sm:text-xs font-medium tracking-wide text-stone-600 dark:text-stone-400 uppercase">Total Value</p>
+              {loading ? (
+                <div className="h-6 sm:h-7 w-24 bg-stone-100 dark:bg-stone-700 rounded animate-pulse mt-1" />
+              ) : (
+                <p className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100 mt-1">
+                  £{items.reduce(
+                    (sum, row) => sum + (((row.inventory?.quantityOnHand || 0) + (row.quantityInTransit || 0)) * (row.inventory?.averageCostGBP || 0)),
+                    0
+                  ).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Toolbar - mobile: search row + controls row; desktop: single row */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-        {/* Row 1: Search (full width on mobile) */}
-        <div className="flex items-center gap-2 flex-1 sm:flex-none sm:ml-auto sm:order-2">
-          <div className="relative flex-1 sm:max-w-xs sm:w-72">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name / SKU"
-              className="w-full rounded-md bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-3 py-1.5 pr-7 focus:outline-none focus:ring-2 focus:ring-amber-600"
-            />
-            {search ? (
-              <button
-                type="button"
-                onClick={() => setSearch('')}
-                className="absolute inset-y-0 right-2 my-auto inline-flex h-4 w-4 items-center justify-center rounded-full text-[11px] text-stone-500 hover:text-stone-900 hover:bg-stone-100"
-                aria-label="Clear search"
-              >
-                ×
-              </button>
-            ) : (
-              <svg className="absolute inset-y-0 right-2 my-auto h-3.5 w-3.5 text-stone-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            )}
-          </div>
-          {/* Scanner button - mobile only */}
-          <button
-            type="button"
-            onClick={() => setScannerOpen(true)}
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md bg-amber-600 text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 sm:hidden flex-shrink-0"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7h3M4 17h3M17 7h3M17 17h3M9 7h6M9 17h6M7 9v6M17 9v6" />
-            </svg>
-          </button>
-          {/* View toggle + new item - desktop only inline */}
-          <div className="hidden sm:inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-0.5">
-            <button
-              onClick={() => setViewMode('grid')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                viewMode === 'grid'
-                  ? 'bg-amber-600 text-white'
-                  : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
-              }`}
-              title="Grid view"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setViewMode('table')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                viewMode === 'table'
-                  ? 'bg-amber-600 text-white'
-                  : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
-              }`}
-              title="Table view"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => router.push('/inventory/new')}
-            className="hidden sm:block px-3 py-1.5 text-xs rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
-          >
-            New item
-          </button>
-        </div>
-        {/* Row 2: Breadcrumb + view toggle + new item (mobile) */}
-        <div className="flex items-center justify-between gap-2 sm:order-1 sm:flex-shrink-0">
-          <div className="flex items-center gap-1.5 text-xs text-stone-500 min-w-0 overflow-hidden">
-            {/* Mobile folders button - always visible on mobile */}
+          {/* Row 1: Search (full width on mobile) */}
+          <div className="flex items-center gap-2 flex-1 sm:flex-none sm:ml-auto sm:order-2">
+            <div className="relative flex-1 sm:max-w-xs sm:w-72">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name / SKU"
+                className="w-full rounded-md bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-3 py-1.5 pr-7 focus:outline-none focus:ring-2 focus:ring-amber-600"
+              />
+              {search ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute inset-y-0 right-2 my-auto inline-flex h-4 w-4 items-center justify-center rounded-full text-[11px] text-stone-500 hover:text-stone-900 hover:bg-stone-100"
+                  aria-label="Clear search"
+                >
+                  ×
+                </button>
+              ) : (
+                <svg className="absolute inset-y-0 right-2 my-auto h-3.5 w-3.5 text-stone-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              )}
+            </div>
+            {/* Scanner button - mobile only */}
             <button
               type="button"
-              onClick={() => setMobileFoldersOpen(true)}
-              className="md:hidden inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 text-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800 hover:text-stone-700 transition-colors text-[11px] font-medium mr-1"
+              onClick={() => setScannerOpen(true)}
+              className="inline-flex items-center justify-center w-8 h-8 rounded-md bg-amber-600 text-white hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 sm:hidden flex-shrink-0"
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7h3M4 17h3M17 7h3M17 17h3M9 7h6M9 17h6M7 9v6M17 9v6" />
               </svg>
-              Folders
             </button>
-            {/* Desktop folders button - only when collapsed */}
-            {foldersPanelCollapsed && (
-              <button
-                type="button"
-                onClick={() => setFoldersPanelCollapsed(false)}
-                className="hidden md:inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 text-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800 hover:text-stone-700 transition-colors text-[11px] font-medium mr-1"
-                title="Show folders"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                Folders
-              </button>
-            )}
-            <span className="uppercase tracking-wide text-[10px] text-stone-400 hidden sm:inline">Location</span>
-            <span className="text-stone-400 hidden sm:inline">/</span>
-            <button
-              type="button"
-              onClick={() => setActiveFolderId('all')}
-              className={`px-2 py-0.5 rounded-md text-xs ${
-                activeFolderId === 'all'
-                  ? 'bg-amber-600 text-white'
-                  : 'text-stone-800 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800'
-              }`}
-            >
-              All items
-            </button>
-            {activeFolderPath.map((segment, index) => (
-              <span key={segment.id} className="flex items-center gap-1.5 min-w-0">
-                <span className="text-stone-400">/</span>
-                {index === activeFolderPath.length - 1 ? (
-                  <span className="px-2 py-0.5 rounded-md bg-amber-600 text-white font-semibold truncate max-w-[120px]">
-                    {segment.name}
-                  </span>
-                ) : (
-                  <span className="text-stone-600 dark:text-stone-400 truncate max-w-[80px]">{segment.name}</span>
-                )}
-              </span>
-            ))}
-          </div>
-          {/* View toggle + new item - mobile only */}
-          <div className="flex items-center gap-1.5 sm:hidden flex-shrink-0">
-            <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-0.5">
+            {/* View toggle + new item - desktop only inline */}
+            <div className="hidden sm:inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-0.5">
               <button
                 onClick={() => setViewMode('grid')}
-                className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  viewMode === 'grid'
-                    ? 'bg-amber-600 text-white'
-                    : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
-                }`}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'grid'
+                  ? 'bg-amber-600 text-white'
+                  : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
+                  }`}
                 title="Grid view"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1015,11 +948,10 @@ export default function InventoryPage() {
               </button>
               <button
                 onClick={() => setViewMode('table')}
-                className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  viewMode === 'table'
-                    ? 'bg-amber-600 text-white'
-                    : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
-                }`}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'table'
+                  ? 'bg-amber-600 text-white'
+                  : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
+                  }`}
                 title="Table view"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1030,12 +962,101 @@ export default function InventoryPage() {
             <button
               type="button"
               onClick={() => router.push('/inventory/new')}
-              className="px-2.5 py-1.5 text-xs rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+              className="hidden sm:block px-3 py-1.5 text-xs rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
             >
               New item
             </button>
           </div>
-        </div>
+          {/* Row 2: Breadcrumb + view toggle + new item (mobile) */}
+          <div className="flex items-center justify-between gap-2 sm:order-1 sm:flex-shrink-0">
+            <div className="flex items-center gap-1.5 text-xs text-stone-500 min-w-0 overflow-hidden">
+              {/* Mobile folders button - always visible on mobile */}
+              <button
+                type="button"
+                onClick={() => setMobileFoldersOpen(true)}
+                className="md:hidden inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 text-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800 hover:text-stone-700 transition-colors text-[11px] font-medium mr-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Folders
+              </button>
+              {/* Desktop folders button - only when collapsed */}
+              {foldersPanelCollapsed && (
+                <button
+                  type="button"
+                  onClick={() => setFoldersPanelCollapsed(false)}
+                  className="hidden md:inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 text-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800 hover:text-stone-700 transition-colors text-[11px] font-medium mr-1"
+                  title="Show folders"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                  Folders
+                </button>
+              )}
+              <span className="uppercase tracking-wide text-[10px] text-stone-400 hidden sm:inline">Location</span>
+              <span className="text-stone-400 hidden sm:inline">/</span>
+              <button
+                type="button"
+                onClick={() => setActiveFolderId('all')}
+                className={`px-2 py-0.5 rounded-md text-xs ${activeFolderId === 'all'
+                  ? 'bg-amber-600 text-white'
+                  : 'text-stone-800 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800'
+                  }`}
+              >
+                All items
+              </button>
+              {activeFolderPath.map((segment, index) => (
+                <span key={segment.id} className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-stone-400">/</span>
+                  {index === activeFolderPath.length - 1 ? (
+                    <span className="px-2 py-0.5 rounded-md bg-amber-600 text-white font-semibold truncate max-w-[120px]">
+                      {segment.name}
+                    </span>
+                  ) : (
+                    <span className="text-stone-600 dark:text-stone-400 truncate max-w-[80px]">{segment.name}</span>
+                  )}
+                </span>
+              ))}
+            </div>
+            {/* View toggle + new item - mobile only */}
+            <div className="flex items-center gap-1.5 sm:hidden flex-shrink-0">
+              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-0.5">
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'grid'
+                    ? 'bg-amber-600 text-white'
+                    : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
+                    }`}
+                  title="Grid view"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'table'
+                    ? 'bg-amber-600 text-white'
+                    : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
+                    }`}
+                  title="Table view"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => router.push('/inventory/new')}
+                className="px-2.5 py-1.5 text-xs rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+              >
+                New item
+              </button>
+            </div>
+          </div>
         </div>{/* end toolbar wrapper */}
       </div>{/* end sticky top */}
 
@@ -1045,276 +1066,273 @@ export default function InventoryPage() {
           {/* Folders sidebar - hidden on mobile */}
           <div className={`hidden md:block overflow-hidden flex-shrink-0 transition-[width,opacity] duration-300 ease-in-out ${foldersPanelCollapsed ? 'w-0 opacity-0' : 'w-64 opacity-100'}`}>
             <div className="w-64 h-full flex flex-col bg-white dark:bg-stone-900 border-r border-stone-200 dark:border-stone-700">
-            {/* Drawer header */}
-            <div className="px-3 py-2 border-b border-stone-200 dark:border-stone-700 flex items-center justify-between bg-white dark:bg-stone-900">
-              <div className="flex flex-col">
-                <span className="text-[11px] font-semibold text-stone-800 dark:text-stone-200 uppercase tracking-wide">
-                  Available inventory
-                </span>
-                <span className="text-[10px] text-stone-400 dark:text-stone-500">Browse locations & folders</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={handleStartNewFolder}
-                  className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-200 bg-stone-50 dark:bg-stone-800 hover:bg-amber-50 dark:hover:bg-amber-900/30 text-xs"
-                >
-                  +
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFoldersPanelCollapsed(true)}
-                  className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-400 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 hover:text-stone-600 transition-colors"
-                  title="Hide folders"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            {/* Folder tree */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
-              {isCreatingFolder && (
-                <div className="px-3 pb-2 flex items-center gap-2">
-                  <input
-                    value={newFolderName}
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleCreateFolder();
-                      } else if (e.key === 'Escape') {
-                        e.preventDefault();
-                        handleCancelNewFolder();
-                      }
-                    }}
-                    placeholder="New folder name"
-                    className="flex-1 rounded-md bg-[#f9f9f8] dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[11px] text-stone-900 dark:text-stone-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                  />
+              {/* Drawer header */}
+              <div className="px-3 py-2 border-b border-stone-200 dark:border-stone-700 flex items-center justify-between bg-white dark:bg-stone-900">
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-semibold text-stone-800 dark:text-stone-200 uppercase tracking-wide">
+                    Available inventory
+                  </span>
+                  <span className="text-[10px] text-stone-400 dark:text-stone-500">Browse locations & folders</span>
+                </div>
+                <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={handleCreateFolder}
-                    className="px-2 py-1 text-[11px] rounded-md bg-amber-600 text-white hover:bg-amber-700"
+                    onClick={handleStartNewFolder}
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-200 bg-stone-50 dark:bg-stone-800 hover:bg-amber-50 dark:hover:bg-amber-900/30 text-xs"
                   >
-                    Save
+                    +
                   </button>
                   <button
                     type="button"
-                    onClick={handleCancelNewFolder}
-                    className="px-1.5 py-1 text-[11px] rounded-md text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+                    onClick={() => setFoldersPanelCollapsed(true)}
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-400 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 hover:text-stone-600 transition-colors"
+                    title="Hide folders"
                   >
-                    ×
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
                   </button>
                 </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setActiveFolderId('all')}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  setDragOverFolderId('all');
-                }}
-                onDragEnter={() => setDragOverFolderId('all')}
-                onDragLeave={() => {
-                  setDragOverFolderId((prev) => (prev === 'all' ? null : prev));
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const folderDbId = e.dataTransfer.getData('application/x-folder-id');
-                  const productId =
-                    e.dataTransfer.getData('application/x-product-id') ||
-                    e.dataTransfer.getData('text/plain');
+              </div>
 
-                  if (folderDbId) {
-                    handleMoveFolder(folderDbId, null);
-                  } else if (productId) {
-                    handleAssignProductToFolder(productId, 'all');
-                  }
-                  setDragOverFolderId(null);
-                }}
-                className={`flex items-center justify-between w-full px-4 py-2.5 text-sm font-medium border-l-2 transition-colors transition-transform duration-150 ${
-                  activeFolderId === 'all' || dragOverFolderId === 'all'
+              {/* Folder tree */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
+                {isCreatingFolder && (
+                  <div className="px-3 pb-2 flex items-center gap-2">
+                    <input
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleCreateFolder();
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          handleCancelNewFolder();
+                        }
+                      }}
+                      placeholder="New folder name"
+                      className="flex-1 rounded-md bg-[#f9f9f8] dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[11px] text-stone-900 dark:text-stone-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCreateFolder}
+                      className="px-2 py-1 text-[11px] rounded-md bg-amber-600 text-white hover:bg-amber-700"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelNewFolder}
+                      className="px-1.5 py-1 text-[11px] rounded-md text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveFolderId('all')}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    setDragOverFolderId('all');
+                  }}
+                  onDragEnter={() => setDragOverFolderId('all')}
+                  onDragLeave={() => {
+                    setDragOverFolderId((prev) => (prev === 'all' ? null : prev));
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const folderDbId = e.dataTransfer.getData('application/x-folder-id');
+                    const productId =
+                      e.dataTransfer.getData('application/x-product-id') ||
+                      e.dataTransfer.getData('text/plain');
+
+                    if (folderDbId) {
+                      handleMoveFolder(folderDbId, null);
+                    } else if (productId) {
+                      handleAssignProductToFolder(productId, 'all');
+                    }
+                    setDragOverFolderId(null);
+                  }}
+                  className={`flex items-center justify-between w-full px-4 py-2.5 text-sm font-medium border-l-2 transition-colors transition-transform duration-150 ${activeFolderId === 'all' || dragOverFolderId === 'all'
                     ? 'border-amber-600 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 translate-x-0.5'
                     : isDraggingFolder
                       ? 'border-stone-300 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
                       : 'border-transparent text-stone-800 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className="inline-flex h-5 w-5 items-center justify-center">
-                    {/* Folder icon */}
-                    <svg
-                      className="h-4 w-4"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <path
-                        d="M4 7.5C4 6.67157 4.67157 6 5.5 6H9l2 2h7.5C19.3284 8 20 8.67157 20 9.5V16.5C20 17.3284 19.3284 18 18.5 18H5.5C4.67157 18 4 17.3284 4 16.5V7.5Z"
-                        stroke="currentColor"
-                        strokeWidth="1.6"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
+                    }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="inline-flex h-5 w-5 items-center justify-center">
+                      {/* Folder icon */}
+                      <svg
+                        className="h-4 w-4"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M4 7.5C4 6.67157 4.67157 6 5.5 6H9l2 2h7.5C19.3284 8 20 8.67157 20 9.5V16.5C20 17.3284 19.3284 18 18.5 18H5.5C4.67157 18 4 17.3284 4 16.5V7.5Z"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                    <span>All items</span>
                   </span>
-                  <span>All items</span>
-                </span>
-                {dragOverFolderId === 'all' ? (
-                  <span className="ml-2 text-[10px] text-amber-500">Drop to move folder to top level</span>
-                ) : isDraggingFolder ? (
-                  <span className="ml-2 text-[10px] text-stone-500">Drag here to move folder to top level</span>
-                ) : null}
-              </button>
+                  {dragOverFolderId === 'all' ? (
+                    <span className="ml-2 text-[10px] text-amber-500">Drop to move folder to top level</span>
+                  ) : isDraggingFolder ? (
+                    <span className="ml-2 text-[10px] text-stone-500">Drag here to move folder to top level</span>
+                  ) : null}
+                </button>
 
-              <div className="mt-1 space-y-0 text-sm">
-                {folderTree.length === 0 ? (
-                  <p className="text-[11px] text-stone-400 px-4 pt-1">
-                    No folders yet. Products will appear here once categories are added.
-                  </p>
-                ) : (
-                  folderTree.map((folder) => {
-                    const isCustom = folder.isCustom;
-                    const paddingLeft = 20 + folder.depth * 14;
-                    const hasChildren = folderTree.some((f) => f.parentId === folder.id);
+                <div className="mt-1 space-y-0 text-sm">
+                  {folderTree.length === 0 ? (
+                    <p className="text-[11px] text-stone-400 px-4 pt-1">
+                      No folders yet. Products will appear here once categories are added.
+                    </p>
+                  ) : (
+                    folderTree.map((folder) => {
+                      const isCustom = folder.isCustom;
+                      const paddingLeft = 20 + folder.depth * 14;
+                      const hasChildren = folderTree.some((f) => f.parentId === folder.id);
 
-                    if (hasCollapsedAncestor(folder.id)) {
-                      return null;
-                    }
+                      if (hasCollapsedAncestor(folder.id)) {
+                        return null;
+                      }
 
-                    return (
-                      <div
-                        key={`${folder.id}-${folder.depth}`}
-                        draggable={isCustom}
-                        onDragStart={(e) => {
-                          if (!isCustom) return;
-                          const customFolder = customFolders.find((f) => f.id === folder.id);
-                          if (!customFolder) return;
-                          handleFolderDragStart(e, customFolder);
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = 'move';
-                          setDragOverFolderId(folder.id);
-                        }}
-                        onDragEnter={() => setDragOverFolderId(folder.id)}
-                        onDragLeave={() => {
-                          setDragOverFolderId((prev) => (prev === folder.id ? null : prev));
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          const folderDbId = e.dataTransfer.getData('application/x-folder-id');
-                          const productId =
-                            e.dataTransfer.getData('application/x-product-id') ||
-                            e.dataTransfer.getData('text/plain');
+                      return (
+                        <div
+                          key={`${folder.id}-${folder.depth}`}
+                          draggable={isCustom}
+                          onDragStart={(e) => {
+                            if (!isCustom) return;
+                            const customFolder = customFolders.find((f) => f.id === folder.id);
+                            if (!customFolder) return;
+                            handleFolderDragStart(e, customFolder);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            setDragOverFolderId(folder.id);
+                          }}
+                          onDragEnter={() => setDragOverFolderId(folder.id)}
+                          onDragLeave={() => {
+                            setDragOverFolderId((prev) => (prev === folder.id ? null : prev));
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const folderDbId = e.dataTransfer.getData('application/x-folder-id');
+                            const productId =
+                              e.dataTransfer.getData('application/x-product-id') ||
+                              e.dataTransfer.getData('text/plain');
 
-                          if (folderDbId && isCustom) {
-                            const targetCustom = customFolders.find((f) => f.id === folder.id);
-                            if (targetCustom && targetCustom.dbId && targetCustom.dbId !== folderDbId) {
-                              handleMoveFolder(folderDbId, targetCustom.dbId);
+                            if (folderDbId && isCustom) {
+                              const targetCustom = customFolders.find((f) => f.id === folder.id);
+                              if (targetCustom && targetCustom.dbId && targetCustom.dbId !== folderDbId) {
+                                handleMoveFolder(folderDbId, targetCustom.dbId);
+                              }
+                            } else if (productId) {
+                              handleAssignProductToFolder(productId, folder.id);
                             }
-                          } else if (productId) {
-                            handleAssignProductToFolder(productId, folder.id);
-                          }
-                          setDragOverFolderId(null);
-                          setIsDraggingFolder(false);
-                        }}
-                        onDragEnd={() => {
-                          setDragOverFolderId((prev) => (prev === folder.id ? null : prev));
-                          setIsDraggingFolder(false);
-                        }}
-                        className={`flex items-center justify-between w-full py-2.5 border-l-2 transition-colors transition-transform duration-150 ${
-                          activeFolderId === folder.id || dragOverFolderId === folder.id
+                            setDragOverFolderId(null);
+                            setIsDraggingFolder(false);
+                          }}
+                          onDragEnd={() => {
+                            setDragOverFolderId((prev) => (prev === folder.id ? null : prev));
+                            setIsDraggingFolder(false);
+                          }}
+                          className={`flex items-center justify-between w-full py-2.5 border-l-2 transition-colors transition-transform duration-150 ${activeFolderId === folder.id || dragOverFolderId === folder.id
                             ? 'border-amber-600 bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 translate-x-0.5'
                             : 'border-transparent text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800'
-                        } ${isCustom ? 'cursor-move' : ''}`}
-                        style={{ paddingLeft }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setActiveFolderId(folder.id)}
-                          className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                            } ${isCustom ? 'cursor-move' : ''}`}
+                          style={{ paddingLeft }}
                         >
-                          {folder.depth > 0 && (
-                            <span
-                              className="self-stretch border-l border-stone-200 mr-1"
-                              aria-hidden="true"
-                            />
-                          )}
-                          <span className="inline-flex h-5 w-5 items-center justify-center text-stone-600">
-                            {/* Nested folder icon */}
-                            <svg
-                              className="h-4 w-4"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              xmlns="http://www.w3.org/2000/svg"
-                            >
-                              <path
-                                d="M4.5 8.5C4.5 7.67157 5.17157 7 6 7H9.5L11 8.5H18C18.8284 8.5 19.5 9.17157 19.5 10V16C19.5 16.8284 18.8284 17.5 18 17.5H6C5.17157 17.5 4.5 16.8284 4.5 16V8.5Z"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                          <button
+                            type="button"
+                            onClick={() => setActiveFolderId(folder.id)}
+                            className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                          >
+                            {folder.depth > 0 && (
+                              <span
+                                className="self-stretch border-l border-stone-200 mr-1"
+                                aria-hidden="true"
                               />
-                            </svg>
-                          </span>
-                          <span className="truncate">{folder.name}</span>
-                        </button>
-
-                        <div className="flex items-center gap-1 text-[10px] text-stone-600 pr-2">
-                          {isCustom && hasChildren && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleFolderCollapsed(folder.id);
-                              }}
-                              className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-amber-50 focus:outline-none"
-                              aria-label={collapsedFolders[folder.id] ? 'Expand folder' : 'Collapse folder'}
-                            >
+                            )}
+                            <span className="inline-flex h-5 w-5 items-center justify-center text-stone-600">
+                              {/* Nested folder icon */}
                               <svg
-                                className={`h-3 w-3 transform transition-transform ${
-                                  collapsedFolders[folder.id] ? '' : 'rotate-90'
-                                }`}
-                                viewBox="0 0 20 20"
+                                className="h-4 w-4"
+                                viewBox="0 0 24 24"
                                 fill="none"
                                 xmlns="http://www.w3.org/2000/svg"
                               >
                                 <path
-                                  d="M7 5L12 10L7 15"
+                                  d="M4.5 8.5C4.5 7.67157 5.17157 7 6 7H9.5L11 8.5H18C18.8284 8.5 19.5 9.17157 19.5 10V16C19.5 16.8284 18.8284 17.5 18 17.5H6C5.17157 17.5 4.5 16.8284 4.5 16V8.5Z"
                                   stroke="currentColor"
                                   strokeWidth="1.5"
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
                                 />
                               </svg>
-                            </button>
-                          )}
-                          {dragOverFolderId === folder.id && (
-                            <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-500 border border-amber-200">
-                              Drop to move here
                             </span>
-                          )}
-                          {isCustom && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteFolder(folder.id)}
-                              className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50"
-                              aria-label="Delete folder"
-                            >
-                              ×
-                            </button>
-                          )}
+                            <span className="truncate">{folder.name}</span>
+                          </button>
+
+                          <div className="flex items-center gap-1 text-[10px] text-stone-600 pr-2">
+                            {isCustom && hasChildren && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleFolderCollapsed(folder.id);
+                                }}
+                                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-amber-50 focus:outline-none"
+                                aria-label={collapsedFolders[folder.id] ? 'Expand folder' : 'Collapse folder'}
+                              >
+                                <svg
+                                  className={`h-3 w-3 transform transition-transform ${collapsedFolders[folder.id] ? '' : 'rotate-90'
+                                    }`}
+                                  viewBox="0 0 20 20"
+                                  fill="none"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                >
+                                  <path
+                                    d="M7 5L12 10L7 15"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </button>
+                            )}
+                            {dragOverFolderId === folder.id && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-500 border border-amber-200">
+                                Drop to move here
+                              </span>
+                            )}
+                            {isCustom && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteFolder(folder.id)}
+                                className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50"
+                                aria-label="Delete folder"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })
-                )}
+                      );
+                    })
+                  )}
+                </div>
               </div>
-            </div>
             </div>
           </div>
 
@@ -1333,134 +1351,133 @@ export default function InventoryPage() {
               </div>
             ) : viewMode === 'table' ? (
               <div className="bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-lg overflow-hidden">
-                  <table className="w-full divide-y divide-stone-200 dark:divide-stone-700">
-                    <thead className="bg-[#f9f9f8] dark:bg-stone-900">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
-                          Product
+                <table className="w-full divide-y divide-stone-200 dark:divide-stone-700">
+                  <thead className="bg-[#f9f9f8] dark:bg-stone-900">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
+                        Product
+                      </th>
+                      {foldersPanelCollapsed && (
+                        <th className="hidden lg:table-cell px-4 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap">
+                          SKU
                         </th>
-                        {foldersPanelCollapsed && (
-                          <th className="hidden lg:table-cell px-4 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap">
-                            SKU
-                          </th>
-                        )}
-                        <th className="px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap w-20">
-                          In Hand
+                      )}
+                      <th className="px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap w-20">
+                        In Hand
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap w-20">
+                        In Transit
+                      </th>
+                      {foldersPanelCollapsed && (
+                        <th className="hidden lg:table-cell px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap w-24">
+                          Avg Cost
                         </th>
-                        <th className="px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap w-20">
-                          In Transit
-                        </th>
-                        {foldersPanelCollapsed && (
-                          <th className="hidden lg:table-cell px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider whitespace-nowrap w-24">
-                            Avg Cost
-                          </th>
-                        )}
-                        <th className="px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider w-12">
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-stone-200 dark:divide-stone-700">
-                      {visibleItems.map((row) => {
-                        return (
-                          <tr
-                            key={row.product.id}
-                            className="hover:border-l-2 hover:border-l-amber-600 dark:hover:bg-stone-700/20 cursor-pointer transition-colors"
-                            onClick={() => router.push(`/inventory/${row.product.id}`)}
-                          >
-                            <td className="px-4 py-3 text-sm text-stone-900 dark:text-stone-100">
-                              <div className="flex items-center gap-3">
-                                <div className="h-9 w-9 rounded-md bg-gradient-to-br from-stone-100 to-stone-200 dark:from-stone-700 dark:to-stone-600 flex items-center justify-center text-[10px] font-bold text-stone-800 dark:text-stone-200 uppercase flex-shrink-0">
-                                  {row.product.name
-                                    .split(' ')
-                                    .filter(Boolean)
-                                    .slice(0, 2)
-                                    .map((word) => word[0])
-                                    .join('')
-                                    .toUpperCase() || 'PR'}
-                                </div>
-                                <div className="min-w-0">
-                                  <div className="font-medium text-stone-900 dark:text-stone-100 truncate">{row.product.name}</div>
-                                  {row.supplier?.name && (
-                                    <div className="text-xs text-stone-400 dark:text-stone-500">{row.supplier.name}</div>
-                                  )}
-                                </div>
+                      )}
+                      <th className="px-4 py-3 text-right text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider w-12">
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-200 dark:divide-stone-700">
+                    {visibleItems.map((row) => {
+                      return (
+                        <tr
+                          key={row.product.id}
+                          className="hover:border-l-2 hover:border-l-amber-600 dark:hover:bg-stone-700/20 cursor-pointer transition-colors"
+                          onClick={() => router.push(`/inventory/${row.product.id}`)}
+                        >
+                          <td className="px-4 py-3 text-sm text-stone-900 dark:text-stone-100">
+                            <div className="flex items-center gap-3">
+                              <div className="h-9 w-9 rounded-md bg-gradient-to-br from-stone-100 to-stone-200 dark:from-stone-700 dark:to-stone-600 flex items-center justify-center text-[10px] font-bold text-stone-800 dark:text-stone-200 uppercase flex-shrink-0">
+                                {row.product.name
+                                  .split(' ')
+                                  .filter(Boolean)
+                                  .slice(0, 2)
+                                  .map((word) => word[0])
+                                  .join('')
+                                  .toUpperCase() || 'PR'}
                               </div>
-                            </td>
-                            {foldersPanelCollapsed && (
-                              <td className="hidden lg:table-cell px-4 py-3 text-sm text-stone-500 dark:text-stone-400 font-mono truncate max-w-[140px]">
-                                {row.product.primarySku || row.product.supplierSku || '-'}
-                              </td>
-                            )}
-                            <td className="px-4 py-3 text-sm text-right tabular-nums text-stone-900 dark:text-stone-100 font-medium whitespace-nowrap">
-                              {row.inventory?.quantityOnHand || 0}
-                            </td>
-                            <td className="px-4 py-3 text-sm text-right tabular-nums text-stone-500 dark:text-stone-400 whitespace-nowrap">
-                              {row.quantityInTransit || 0}
-                            </td>
-                            {foldersPanelCollapsed && (
-                              <td className="hidden lg:table-cell px-4 py-3 text-sm text-stone-900 dark:text-stone-100 text-right font-mono tabular-nums whitespace-nowrap">
-                                £{(row.inventory?.averageCostGBP || 0).toFixed(2)}
-                              </td>
-                            )}
-                            <td className="px-4 py-3 text-sm text-right">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteProduct(row.product);
-                                }}
-                                disabled={deletingProductId === row.product.id}
-                                className="inline-flex items-center justify-center p-1.5 rounded-md text-stone-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50"
-                                aria-label="Delete product"
-                              >
-                                {deletingProductId === row.product.id ? (
-                                  <svg
-                                    className="animate-spin h-4 w-4"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <circle
-                                      className="opacity-25"
-                                      cx="12"
-                                      cy="12"
-                                      r="10"
-                                      stroke="currentColor"
-                                      strokeWidth="4"
-                                    ></circle>
-                                    <path
-                                      className="opacity-75"
-                                      fill="currentColor"
-                                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                    ></path>
-                                  </svg>
-                                ) : (
-                                  <svg
-                                    className="h-4 w-4"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    stroke="currentColor"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                    />
-                                  </svg>
+                              <div className="min-w-0">
+                                <div className="font-medium text-stone-900 dark:text-stone-100 truncate">{row.product.name}</div>
+                                {row.supplier?.name && (
+                                  <div className="text-xs text-stone-400 dark:text-stone-500">{row.supplier.name}</div>
                                 )}
-                              </button>
+                              </div>
+                            </div>
+                          </td>
+                          {foldersPanelCollapsed && (
+                            <td className="hidden lg:table-cell px-4 py-3 text-sm text-stone-500 dark:text-stone-400 font-mono truncate max-w-[140px]">
+                              {row.product.primarySku || row.product.supplierSku || '-'}
                             </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                          )}
+                          <td className="px-4 py-3 text-sm text-right tabular-nums text-stone-900 dark:text-stone-100 font-medium whitespace-nowrap">
+                            {row.inventory?.quantityOnHand || 0}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-right tabular-nums text-stone-500 dark:text-stone-400 whitespace-nowrap">
+                            {row.quantityInTransit || 0}
+                          </td>
+                          {foldersPanelCollapsed && (
+                            <td className="hidden lg:table-cell px-4 py-3 text-sm text-stone-900 dark:text-stone-100 text-right font-mono tabular-nums whitespace-nowrap">
+                              £{(row.inventory?.averageCostGBP || 0).toFixed(2)}
+                            </td>
+                          )}
+                          <td className="px-4 py-3 text-sm text-right">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteProduct(row.product);
+                              }}
+                              disabled={deletingProductId === row.product.id}
+                              className="inline-flex items-center justify-center p-1.5 rounded-md text-stone-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50"
+                              aria-label="Delete product"
+                            >
+                              {deletingProductId === row.product.id ? (
+                                <svg
+                                  className="animate-spin h-4 w-4"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <circle
+                                    className="opacity-25"
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    strokeWidth="4"
+                                  ></circle>
+                                  <path
+                                    className="opacity-75"
+                                    fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                  ></path>
+                                </svg>
+                              ) : (
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                  />
+                                </svg>
+                              )}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             ) : (
-              <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${
-                foldersPanelCollapsed ? 'lg:grid-cols-3 xl:grid-cols-4' : 'xl:grid-cols-3'
-              }`}>
+              <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${foldersPanelCollapsed ? 'lg:grid-cols-3 xl:grid-cols-4' : 'xl:grid-cols-3'
+                }`}>
                 {visibleItems.map((row) => {
                   const onHand = row.inventory?.quantityOnHand || 0;
                   const inTransit = row.quantityInTransit || 0;
@@ -1553,122 +1570,120 @@ export default function InventoryPage() {
 
       {/* Mobile folders drawer */}
       <div className={`fixed inset-0 z-50 md:hidden transition-all duration-300 ${mobileFoldersOpen ? 'visible' : 'invisible'}`}>
-          {/* Backdrop */}
-          <div
-            className={`absolute inset-0 bg-black/40 transition-opacity duration-300 ${mobileFoldersOpen ? 'opacity-100' : 'opacity-0'}`}
-            onClick={() => setMobileFoldersOpen(false)}
-          />
-          {/* Drawer */}
-          <div className={`absolute inset-y-0 left-0 w-72 flex flex-col bg-white dark:bg-stone-900 shadow-xl transition-transform duration-300 ease-in-out ${mobileFoldersOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-            {/* Header - same as desktop sidebar */}
-            <div className="px-3 py-2 border-b border-stone-200 dark:border-stone-700 flex items-center justify-between bg-white dark:bg-stone-900">
-              <div className="flex flex-col">
-                <span className="text-[11px] font-semibold text-stone-800 dark:text-stone-200 uppercase tracking-wide">Available inventory</span>
-                <span className="text-[10px] text-stone-400 dark:text-stone-500">Browse locations & folders</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={handleStartNewFolder}
-                  className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-200 bg-stone-50 dark:bg-stone-800 hover:bg-amber-50 dark:hover:bg-amber-900/30 text-xs"
-                >
-                  +
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMobileFoldersOpen(false)}
-                  className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-400 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 hover:text-stone-600 transition-colors"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                  </svg>
-                </button>
-              </div>
+        {/* Backdrop */}
+        <div
+          className={`absolute inset-0 bg-black/40 transition-opacity duration-300 ${mobileFoldersOpen ? 'opacity-100' : 'opacity-0'}`}
+          onClick={() => setMobileFoldersOpen(false)}
+        />
+        {/* Drawer */}
+        <div className={`absolute inset-y-0 left-0 w-72 flex flex-col bg-white dark:bg-stone-900 shadow-xl transition-transform duration-300 ease-in-out ${mobileFoldersOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+          {/* Header - same as desktop sidebar */}
+          <div className="px-3 py-2 border-b border-stone-200 dark:border-stone-700 flex items-center justify-between bg-white dark:bg-stone-900">
+            <div className="flex flex-col">
+              <span className="text-[11px] font-semibold text-stone-800 dark:text-stone-200 uppercase tracking-wide">Available inventory</span>
+              <span className="text-[10px] text-stone-400 dark:text-stone-500">Browse locations & folders</span>
             </div>
-            {/* Folder tree - identical to desktop sidebar */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
-              {isCreatingFolder && (
-                <div className="px-3 pb-2 flex items-center gap-2">
-                  <input
-                    value={newFolderName}
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') { e.preventDefault(); handleCreateFolder(); }
-                      else if (e.key === 'Escape') { e.preventDefault(); handleCancelNewFolder(); }
-                    }}
-                    placeholder="New folder name"
-                    autoFocus
-                    className="flex-1 rounded-md bg-[#f9f9f8] dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[11px] text-stone-900 dark:text-stone-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                  />
-                  <button type="button" onClick={handleCreateFolder} className="px-2 py-1 text-[11px] rounded-md bg-amber-600 text-white hover:bg-amber-700">Save</button>
-                  <button type="button" onClick={handleCancelNewFolder} className="px-1.5 py-1 text-[11px] rounded-md text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100">×</button>
-                </div>
-              )}
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => { setActiveFolderId('all'); setMobileFoldersOpen(false); }}
-                className={`flex items-center justify-between w-full px-4 py-2.5 text-sm font-medium border-l-2 transition-colors ${
-                  activeFolderId === 'all'
-                    ? 'border-amber-600 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
-                    : 'border-transparent text-stone-800 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800'
-                }`}
+                onClick={handleStartNewFolder}
+                className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-200 bg-stone-50 dark:bg-stone-800 hover:bg-amber-50 dark:hover:bg-amber-900/30 text-xs"
               >
-                <span className="flex items-center gap-2">
-                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none">
-                    <path d="M4 7.5C4 6.67157 4.67157 6 5.5 6H9l2 2h7.5C19.3284 8 20 8.67157 20 9.5V16.5C20 17.3284 19.3284 18 18.5 18H5.5C4.67157 18 4 17.3284 4 16.5V7.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  All items
-                </span>
+                +
               </button>
-              <div className="mt-1 space-y-0 text-sm">
-                {folderTree.length === 0 ? (
-                  <p className="text-[11px] text-stone-400 px-4 pt-1">No folders yet.</p>
-                ) : (
-                  folderTree.map((folder) => {
-                    if (hasCollapsedAncestor(folder.id)) return null;
-                    const isCustom = folder.isCustom;
-                    const paddingLeft = 20 + folder.depth * 14;
-                    const hasChildren = folderTree.some((f) => f.parentId === folder.id);
-                    return (
-                      <div
-                        key={`mobile-${folder.id}-${folder.depth}`}
-                        className={`flex items-center justify-between w-full py-2.5 border-l-2 transition-colors ${
-                          activeFolderId === folder.id
-                            ? 'border-amber-600 bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
-                            : 'border-transparent text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800'
-                        }`}
-                        style={{ paddingLeft }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => { setActiveFolderId(folder.id); setMobileFoldersOpen(false); }}
-                          className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                        >
-                          <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none">
-                            <path d="M4.5 8.5C4.5 7.67157 5.17157 7 6 7H9.5L11 8.5H18C18.8284 8.5 19.5 9.17157 19.5 10V16C19.5 16.8284 18.8284 17.5 18 17.5H6C5.17157 17.5 4.5 16.8284 4.5 16V8.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                          <span className="truncate">{folder.name}</span>
-                        </button>
-                        <div className="flex items-center gap-1 pr-2">
-                          {isCustom && hasChildren && (
-                            <button type="button" onClick={(e) => { e.stopPropagation(); toggleFolderCollapsed(folder.id); }} className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-amber-50">
-                              <svg className={`h-3 w-3 transform transition-transform ${collapsedFolders[folder.id] ? '' : 'rotate-90'}`} viewBox="0 0 20 20" fill="none">
-                                <path d="M7 5L12 10L7 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                            </button>
-                          )}
-                          {isCustom && (
-                            <button type="button" onClick={() => handleDeleteFolder(folder.id)} className="inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50">×</button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
+              <button
+                type="button"
+                onClick={() => setMobileFoldersOpen(false)}
+                className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-stone-200 dark:border-stone-700 text-stone-400 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 hover:text-stone-600 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          {/* Folder tree - identical to desktop sidebar */}
+          <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
+            {isCreatingFolder && (
+              <div className="px-3 pb-2 flex items-center gap-2">
+                <input
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); handleCreateFolder(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); handleCancelNewFolder(); }
+                  }}
+                  placeholder="New folder name"
+                  autoFocus
+                  className="flex-1 rounded-md bg-[#f9f9f8] dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[11px] text-stone-900 dark:text-stone-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                />
+                <button type="button" onClick={handleCreateFolder} className="px-2 py-1 text-[11px] rounded-md bg-amber-600 text-white hover:bg-amber-700">Save</button>
+                <button type="button" onClick={handleCancelNewFolder} className="px-1.5 py-1 text-[11px] rounded-md text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100">×</button>
               </div>
+            )}
+            <button
+              type="button"
+              onClick={() => { setActiveFolderId('all'); setMobileFoldersOpen(false); }}
+              className={`flex items-center justify-between w-full px-4 py-2.5 text-sm font-medium border-l-2 transition-colors ${activeFolderId === 'all'
+                ? 'border-amber-600 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
+                : 'border-transparent text-stone-800 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800'
+                }`}
+            >
+              <span className="flex items-center gap-2">
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 7.5C4 6.67157 4.67157 6 5.5 6H9l2 2h7.5C19.3284 8 20 8.67157 20 9.5V16.5C20 17.3284 19.3284 18 18.5 18H5.5C4.67157 18 4 17.3284 4 16.5V7.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                All items
+              </span>
+            </button>
+            <div className="mt-1 space-y-0 text-sm">
+              {folderTree.length === 0 ? (
+                <p className="text-[11px] text-stone-400 px-4 pt-1">No folders yet.</p>
+              ) : (
+                folderTree.map((folder) => {
+                  if (hasCollapsedAncestor(folder.id)) return null;
+                  const isCustom = folder.isCustom;
+                  const paddingLeft = 20 + folder.depth * 14;
+                  const hasChildren = folderTree.some((f) => f.parentId === folder.id);
+                  return (
+                    <div
+                      key={`mobile-${folder.id}-${folder.depth}`}
+                      className={`flex items-center justify-between w-full py-2.5 border-l-2 transition-colors ${activeFolderId === folder.id
+                        ? 'border-amber-600 bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
+                        : 'border-transparent text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800'
+                        }`}
+                      style={{ paddingLeft }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => { setActiveFolderId(folder.id); setMobileFoldersOpen(false); }}
+                        className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                      >
+                        <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none">
+                          <path d="M4.5 8.5C4.5 7.67157 5.17157 7 6 7H9.5L11 8.5H18C18.8284 8.5 19.5 9.17157 19.5 10V16C19.5 16.8284 18.8284 17.5 18 17.5H6C5.17157 17.5 4.5 16.8284 4.5 16V8.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        <span className="truncate">{folder.name}</span>
+                      </button>
+                      <div className="flex items-center gap-1 pr-2">
+                        {isCustom && hasChildren && (
+                          <button type="button" onClick={(e) => { e.stopPropagation(); toggleFolderCollapsed(folder.id); }} className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-amber-50">
+                            <svg className={`h-3 w-3 transform transition-transform ${collapsedFolders[folder.id] ? '' : 'rotate-90'}`} viewBox="0 0 20 20" fill="none">
+                              <path d="M7 5L12 10L7 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </button>
+                        )}
+                        {isCustom && (
+                          <button type="button" onClick={() => handleDeleteFolder(folder.id)} className="inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50">×</button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
+      </div>
     </div>
   );
 }
