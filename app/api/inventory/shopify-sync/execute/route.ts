@@ -40,8 +40,9 @@ export async function POST(request: NextRequest) {
       .from('suppliers')
       .select('id, name')
       .eq('user_id', user.id);
+    const suppliers = (existingSuppliers as any[]) || [];
     const supplierCache = new Map<string, string>();
-    (existingSuppliers || []).forEach((s) => supplierCache.set(s.name.toLowerCase(), s.id));
+    suppliers.forEach((s: any) => supplierCache.set(s.name.toLowerCase(), s.id));
 
     const resolveSupplier = async (name: string | null): Promise<string | null> => {
       if (!name) return null;

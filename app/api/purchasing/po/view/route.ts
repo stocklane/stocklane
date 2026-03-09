@@ -25,32 +25,32 @@ export async function GET(request: NextRequest) {
               .from('suppliers')
               .select('*, purchaseorders!inner(id)')
               .eq('user_id', user.id)
-              .then(({ data }) => data || []),
+              .then(({ data }: any) => data || []),
             supabase
               .from('purchaseorders')
               .select('*')
               .eq('user_id', user.id)
-              .then(({ data }) => data || []),
+              .then(({ data }: any) => data || []),
             supabase
               .from('products')
               .select('*')
               .eq('user_id', user.id)
-              .then(({ data }) => data || []),
+              .then(({ data }: any) => data || []),
             supabase
               .from('inventory')
               .select('*')
               .eq('user_id', user.id)
-              .then(({ data }) => data || []),
+              .then(({ data }: any) => data || []),
             supabase
               .from('transit')
               .select('*')
               .eq('user_id', user.id)
-              .then(({ data }) => data || []),
+              .then(({ data }: any) => data || []),
             supabase
               .from('invoices')
               .select('*')
               .eq('user_id', user.id)
-              .then(({ data }) => data || []),
+              .then(({ data }: any) => data || []),
           ]);
 
         // polines doesn't have user_id - filter by user's purchase order IDs

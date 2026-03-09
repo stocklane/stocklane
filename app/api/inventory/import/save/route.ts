@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       .select('id, name, primarysku, suppliersku, barcodes')
       .eq('user_id', user.id);
 
-    const products = existingProducts || [];
+    const products = (existingProducts as any[]) || [];
 
     // Fetch existing suppliers for matching by name
     const { data: existingSuppliers } = await supabase
@@ -46,9 +46,9 @@ export async function POST(request: NextRequest) {
       .select('id, name')
       .eq('user_id', user.id);
 
-    const suppliers = existingSuppliers || [];
+    const suppliers = (existingSuppliers as any[]) || [];
     const supplierCache = new Map<string, string>(); // lowercase name -> id
-    suppliers.forEach((s) => supplierCache.set(s.name.toLowerCase(), s.id));
+    suppliers.forEach((s: any) => supplierCache.set(s.name.toLowerCase(), s.id));
 
     const resolveSupplier = async (name: string | null): Promise<string | null> => {
       if (!name) return null;
@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
       if (primarySku) {
         const skuLower = primarySku.toLowerCase();
         matchedProduct = products.find(
-          (p) =>
+          (p: any) =>
             (p.primarysku && p.primarysku.toLowerCase() === skuLower) ||
             (p.suppliersku && p.suppliersku.toLowerCase() === skuLower)
         ) || null;
@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
 
       if (!matchedProduct && barcodes.length > 0) {
         const barcodeLowerSet = new Set(barcodes.map((b) => b.toLowerCase()));
-        matchedProduct = products.find((p) => {
+        matchedProduct = products.find((p: any) => {
           const existing = Array.isArray(p.barcodes) ? p.barcodes : [];
           return existing.some((b: string) => barcodeLowerSet.has(b.toLowerCase()));
         }) || null;

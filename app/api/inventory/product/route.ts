@@ -103,7 +103,7 @@ export async function GET(request: NextRequest) {
         }
       : null;
 
-    const poLinesById = new Map(
+    const poLinesById = new Map<string, any>(
       poLineRows.map((l: any) => [
         l.id,
         {
@@ -118,7 +118,7 @@ export async function GET(request: NextRequest) {
       ])
     );
 
-    const posById = new Map(
+    const posById = new Map<string, any>(
       poRows.map((po: any) => [
         po.id,
         {
@@ -135,7 +135,7 @@ export async function GET(request: NextRequest) {
       ])
     );
 
-    const invoicesByPoId = new Map(
+    const invoicesByPoId = new Map<string, any>(
       invoiceRows.map((inv: any) => [
         inv.purchaseorderid,
         {

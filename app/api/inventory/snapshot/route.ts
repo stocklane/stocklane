@@ -54,9 +54,9 @@ export async function GET(request: NextRequest) {
           poLines = data || [];
         }
 
-        const suppliersById = new Map(suppliers?.map((s: any) => [s.id, s]) ?? []);
-        const inventoryByProductId = new Map(inventory?.map((i: any) => [i.productid, i]) ?? []);
-        const poLinesById = new Map(poLines.map((l: any) => [l.id, l]));
+        const suppliersById = new Map<string, any>(suppliers?.map((s: any) => [s.id, s]) ?? []);
+        const inventoryByProductId = new Map<string, any>(inventory?.map((i: any) => [i.productid, i]) ?? []);
+        const poLinesById = new Map<string, any>(poLines.map((l: any) => [l.id, l]));
 
         // Group transit by product
         const transitByProductId = new Map<string, any[]>();

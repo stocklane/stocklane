@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
       .from('products')
       .select('id, name, primarysku, suppliersku, barcodes')
       .eq('user_id', user.id);
-    const products = existingProducts || [];
+    const products = (existingProducts as any[]) || [];
 
     const previewVariants: PreviewVariant[] = [];
 
@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
           if (primarySku) {
             const skuLower = primarySku.toLowerCase();
             const skuMatch = products.find(
-              (prod) =>
+              (prod: any) =>
                 (prod.primarysku && prod.primarysku.toLowerCase() === skuLower) ||
                 (prod.suppliersku && prod.suppliersku.toLowerCase() === skuLower)
             );
@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
           }
 
           if (previewItem.matchType === 'none' && barcode) {
-            const barcodeMatch = products.find((prod) => {
+            const barcodeMatch = products.find((prod: any) => {
               const existing = Array.isArray(prod.barcodes) ? prod.barcodes : [];
               return existing.some((b: string) => b.toLowerCase() === barcode.toLowerCase());
             });
@@ -211,8 +211,8 @@ Respond with a JSON array in exactly this format:
         const mappings: { shopifyVariantId: string, stocklaneProductId: string }[] = JSON.parse(responseText);
 
         for (const mapping of mappings) {
-          const item = previewVariants.find(v => v.shopifyVariantId === mapping.shopifyVariantId);
-          const target = products.find(p => p.id === mapping.stocklaneProductId);
+          const item = previewVariants.find((v: any) => v.shopifyVariantId === mapping.shopifyVariantId);
+          const target = products.find((p: any) => p.id === mapping.stocklaneProductId);
           if (item && target && item.matchType === 'none') {
             item.matchType = 'ai_suggested';
             item.targetProductId = target.id;

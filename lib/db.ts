@@ -271,7 +271,7 @@ export async function deleteSupplier(supplierId: string): Promise<{
       .from('purchaseorders')
       .select('id')
       .eq('supplierid', supplierId)
-      .then(({ data }) => data?.map(po => po.id) || [])));
+      .then(({ data }: any) => (data as any[])?.map((po: any) => po.id) || [])));
 
   return {
     success: true,
@@ -556,8 +556,8 @@ export async function findDuplicatePurchaseOrders(
       // Check for matching line items
       let matchingLines = 0;
       for (const newLine of poLines) {
-        const similarLine = existingLines.find(
-          (existingLine) =>
+        const similarLine = (existingLines as any[]).find(
+          (existingLine: any) =>
             existingLine.description.toLowerCase().includes(newLine.description.toLowerCase().substring(0, 20)) ||
             newLine.description.toLowerCase().includes(existingLine.description.toLowerCase().substring(0, 20)) ||
             (Math.abs(existingLine.unitCostExVAT - newLine.unitCostExVAT) < 0.01 &&

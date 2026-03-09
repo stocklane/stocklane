@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to load orders' }, { status: 500 });
     }
 
-    const orderIds = orders?.map(o => o.id) || [];
+    const orderIds = (orders as any[])?.map((o: any) => o.id) || [];
 
     let inventoryEffects: Record<string, Array<{ product_id: string; quantity_change: number; product_name?: string }>> = {};
 
@@ -81,7 +81,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const enrichedOrders = orders?.map(order => ({
+    const enrichedOrders = (orders as any[])?.map((order: any) => ({
       ...order,
       inventory_effects: inventoryEffects[order.id] || [],
     }));
