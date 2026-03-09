@@ -1,16 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { authenticatedFetch } from '@/lib/api-client';
-
-interface Notification {
-    id: string;
-    type: string;
-    message: string;
-    metadata: any;
-    is_read: boolean;
-    created_at: string;
-}
+import { useNotifications } from '@/contexts/NotificationContext';
 
 interface NotificationBellProps {
     position?: 'bottom-right' | 'top-right' | 'bottom-left' | 'top-left' | 'right-top';
@@ -23,31 +14,9 @@ export default function NotificationBell({
     showLabel = false,
     label = 'Activity'
 }: NotificationBellProps) {
-    const [notifications, setNotifications] = useState<Notification[]>([]);
+    const { notifications, unreadCount, loading, markAllAsRead } = useNotifications();
     const [isOpen, setIsOpen] = useState(false);
-    const [loading, setLoading] = useState(true);
     const dropdownRef = useRef<HTMLDivElement>(null);
-
-    const fetchNotifications = async () => {
-        try {
-            const response = await authenticatedFetch('/api/notifications');
-            const data = await response.json();
-            if (data.notifications) {
-                setNotifications(data.notifications);
-            }
-        } catch (error) {
-            console.error('Failed to fetch notifications:', error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchNotifications();
-        // Poll every 60 seconds
-        const interval = setInterval(fetchNotifications, 60000);
-        return () => clearInterval(interval);
-    }, []);
 
     useEffect(() => {
         function handleClickOutside(event: MouseEvent) {
@@ -59,21 +28,13 @@ export default function NotificationBell({
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const unreadCount = notifications.filter((n) => !n.is_read).length;
-
     const handleToggle = async () => {
-        setIsOpen(!isOpen);
-        if (!isOpen && unreadCount > 0) {
+        const nextState = !isOpen;
+        setIsOpen(nextState);
+
+        if (nextState && unreadCount > 0) {
             // Mark all as read when opening
-            try {
-                await authenticatedFetch('/api/notifications', {
-                    method: 'PATCH',
-                    body: JSON.stringify({}),
-                });
-                setNotifications(notifications.map(n => ({ ...n, is_read: true })));
-            } catch (error) {
-                console.error('Failed to mark notifications as read:', error);
-            }
+            await markAllAsRead();
         }
     };
 
