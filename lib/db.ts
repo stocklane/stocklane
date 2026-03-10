@@ -26,6 +26,9 @@ export interface PurchaseOrder {
   extras: number | null;
   vat: number | null;
   totalAmount: number | null;
+  trackingNumber: string | null;
+  courier: string | null;
+  trackingStatus: string | null;
   createdAt: string;
 }
 
@@ -107,6 +110,9 @@ export async function createPurchaseOrder(
       extras: poData.extras ?? null,
       vat: poData.vat ?? null,
       totalamount: poData.totalAmount ?? null,
+      tracking_number: poData.trackingNumber ?? null,
+      courier: poData.courier ?? null,
+      tracking_status: poData.trackingStatus ?? 'pending',
       user_id: poData.user_id,
     })
     .select('id')
@@ -138,6 +144,9 @@ export async function updatePurchaseOrder(
   if (updates.extras !== undefined) mappedUpdates.extras = updates.extras;
   if (updates.vat !== undefined) mappedUpdates.vat = updates.vat;
   if (updates.totalAmount !== undefined) mappedUpdates.totalamount = updates.totalAmount;
+  if (updates.trackingNumber !== undefined) mappedUpdates.tracking_number = updates.trackingNumber;
+  if (updates.courier !== undefined) mappedUpdates.courier = updates.courier;
+  if (updates.trackingStatus !== undefined) mappedUpdates.tracking_status = updates.trackingStatus;
 
   const { data, error } = await supabase
     .from('purchaseorders')

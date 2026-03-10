@@ -29,7 +29,7 @@ export async function PUT(request: NextRequest) {
     const updates = await request.json();
 
     // Validate the updates (basic validation)
-    const allowedFields = ['supplierId', 'invoiceNumber', 'invoiceDate', 'currency', 'paymentTerms', 'notes'];
+    const allowedFields = ['supplierId', 'invoiceNumber', 'invoiceDate', 'currency', 'paymentTerms', 'notes', 'trackingNumber', 'courier', 'trackingStatus'];
     const invalidFields = Object.keys(updates).filter(field => !allowedFields.includes(field));
 
     if (invalidFields.length > 0) {
@@ -47,6 +47,9 @@ export async function PUT(request: NextRequest) {
     if (updates.currency !== undefined) mappedUpdates.currency = updates.currency;
     if (updates.paymentTerms !== undefined) mappedUpdates.paymentterms = updates.paymentTerms;
     if (updates.notes !== undefined) mappedUpdates.notes = updates.notes;
+    if (updates.trackingNumber !== undefined) mappedUpdates.tracking_number = updates.trackingNumber;
+    if (updates.courier !== undefined) mappedUpdates.courier = updates.courier;
+    if (updates.trackingStatus !== undefined) mappedUpdates.tracking_status = updates.trackingStatus;
 
     // Update the PO using the authenticated supabase client
     const { data, error } = await supabase

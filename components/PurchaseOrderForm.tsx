@@ -21,6 +21,9 @@ interface POFormData {
     invoiceDate?: string;
     originalCurrency?: string;
     paymentTerms?: string;
+    trackingNumber?: string;
+    courier?: string;
+    trackingStatus?: string;
   };
   poLines: Array<{
     description: string;
@@ -130,14 +133,14 @@ export default function PurchaseOrderForm({
     setFormData((prev) => {
       const updated = { ...prev };
       const line = { ...updated.poLines[index], [field]: value };
-      
+
       // Auto-calculate line total
       if (field === 'quantity' || field === 'unitCostExVAT') {
         line.lineTotalExVAT = line.quantity * line.unitCostExVAT;
       }
-      
+
       updated.poLines[index] = line;
-      
+
       // Recalculate totals
       const subtotal = updated.poLines.reduce((sum, item) => sum + item.lineTotalExVAT, 0);
       updated.totals = {
@@ -145,7 +148,7 @@ export default function PurchaseOrderForm({
         subtotal,
         total: subtotal + (updated.totals?.vat || 0),
       };
-      
+
       return updated;
     });
   };
@@ -171,7 +174,7 @@ export default function PurchaseOrderForm({
       setFormData((prev) => {
         const updated = { ...prev };
         updated.poLines = updated.poLines.filter((_, i) => i !== index);
-        
+
         // Recalculate totals
         const subtotal = updated.poLines.reduce((sum, item) => sum + item.lineTotalExVAT, 0);
         updated.totals = {
@@ -179,7 +182,7 @@ export default function PurchaseOrderForm({
           subtotal,
           total: subtotal + (updated.totals?.vat || 0),
         };
-        
+
         return updated;
       });
     }
@@ -207,7 +210,7 @@ export default function PurchaseOrderForm({
       {/* Supplier Details */}
       <div>
         <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">{title}</h4>
-        
+
         {/* Supplier Dropdown */}
         <div className="mb-4">
           <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
@@ -225,7 +228,7 @@ export default function PurchaseOrderForm({
               </option>
             ))}
           </select>
-          
+
           {!selectedSupplierId && (
             <input
               type="text"
@@ -314,6 +317,54 @@ export default function PurchaseOrderForm({
               className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-800 rounded-md text-sm text-stone-900 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-600"
             />
           </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">Courier</label>
+            <select
+              value={formData.purchaseOrder.courier || ''}
+              onChange={(e) => handlePOFieldChange('courier', e.target.value)}
+              className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-800 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600 appearance-none"
+            >
+              <option value="">-- Select Courier --</option>
+              <option value="DPD">DPD</option>
+              <option value="FedEx">FedEx</option>
+              <option value="UPS">UPS</option>
+              <option value="Royal Mail">Royal Mail</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">Tracking Number</label>
+            <input
+              type="text"
+              value={formData.purchaseOrder.trackingNumber || ''}
+              onChange={(e) => {
+                const val = e.target.value;
+                setFormData(prev => ({
+                  ...prev,
+                  purchaseOrder: {
+                    ...prev.purchaseOrder,
+                    trackingNumber: val,
+                    trackingStatus: (val && prev.purchaseOrder.trackingStatus === 'pending') ? 'in_transit' : prev.purchaseOrder.trackingStatus
+                  }
+                }));
+              }}
+              placeholder="e.g. 1Z999..."
+              className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-800 rounded-md text-sm text-stone-900 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-amber-600"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">Status</label>
+            <select
+              value={formData.purchaseOrder.trackingStatus || 'pending'}
+              onChange={(e) => handlePOFieldChange('trackingStatus', e.target.value)}
+              className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-800 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600 appearance-none"
+            >
+              <option value="pending">Pending</option>
+              <option value="in_transit">In Transit</option>
+              <option value="delivered">Delivered</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -329,7 +380,7 @@ export default function PurchaseOrderForm({
             + Add Line Item
           </button>
         </div>
-        
+
         <div className="bg-[#f9f9f8] dark:bg-stone-800/50 rounded-lg p-3 max-h-96 overflow-y-auto border border-stone-200 dark:border-stone-700">
           <table className="w-full text-sm">
             <thead className="text-xs text-stone-600 dark:text-stone-400 font-medium border-b border-stone-200 dark:border-stone-700 sticky top-0 bg-[#f9f9f8] dark:bg-stone-800">
@@ -402,7 +453,7 @@ export default function PurchaseOrderForm({
             </tbody>
           </table>
         </div>
-        
+
         <div className="mt-3 flex justify-end">
           <div className="text-base">
             <span className="text-stone-600 dark:text-stone-400 font-medium">Total: </span>

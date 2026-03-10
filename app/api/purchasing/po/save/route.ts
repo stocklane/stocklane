@@ -18,6 +18,8 @@ interface SavePORequest {
     invoiceDate?: string;
     originalCurrency?: string;
     paymentTerms?: string;
+    trackingNumber?: string;
+    courier?: string;
   };
   poLines: Array<{
     description: string;
@@ -142,6 +144,9 @@ export async function POST(request: NextRequest) {
         extras: data.totals?.extras ?? null,
         vat: data.totals?.vat ?? null,
         totalAmount: data.totals?.total ?? null,
+        trackingNumber: data.purchaseOrder.trackingNumber || null,
+        courier: data.purchaseOrder.courier || null,
+        trackingStatus: 'pending',
         user_id: user.id,
       });
 

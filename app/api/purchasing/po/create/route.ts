@@ -54,6 +54,9 @@ export async function POST(request: NextRequest) {
       extras: poData.extras ?? null,
       vat: poData.vat ?? null,
       totalAmount: poData.totalAmount ?? null,
+      trackingNumber: null,
+      courier: null,
+      trackingStatus: 'pending',
       user_id: user.id,
     });
 

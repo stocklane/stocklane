@@ -318,6 +318,9 @@ export async function POST(request: NextRequest) {
         extras: null,
         vat: extractedData.totals?.vatTotal ?? null,
         totalAmount: extractedData.totals?.grandTotal ?? null,
+        trackingNumber: null,
+        courier: null,
+        trackingStatus: 'pending',
         user_id: user.id,
       });
 
