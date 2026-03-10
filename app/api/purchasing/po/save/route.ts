@@ -19,6 +19,7 @@ interface SavePORequest {
     originalCurrency?: string;
     paymentTerms?: string;
     trackingNumber?: string;
+    trackingPostcode?: string;
     courier?: string;
   };
   poLines: Array<{
@@ -145,6 +146,7 @@ export async function POST(request: NextRequest) {
         vat: data.totals?.vat ?? null,
         totalAmount: data.totals?.total ?? null,
         trackingNumber: data.purchaseOrder.trackingNumber || null,
+        trackingPostcode: data.purchaseOrder.trackingPostcode || null,
         courier: data.purchaseOrder.courier || null,
         trackingStatus: 'pending',
         user_id: user.id,

@@ -29,7 +29,7 @@ export async function PUT(request: NextRequest) {
     const updates = await request.json();
 
     // Validate the updates (basic validation)
-    const allowedFields = ['supplierId', 'invoiceNumber', 'invoiceDate', 'currency', 'paymentTerms', 'notes', 'trackingNumber', 'courier', 'trackingStatus'];
+    const allowedFields = ['supplierId', 'invoiceNumber', 'invoiceDate', 'currency', 'paymentTerms', 'notes', 'trackingNumber', 'trackingPostcode', 'courier', 'trackingStatus'];
     const invalidFields = Object.keys(updates).filter(field => !allowedFields.includes(field));
 
     if (invalidFields.length > 0) {
@@ -48,6 +48,7 @@ export async function PUT(request: NextRequest) {
     if (updates.paymentTerms !== undefined) mappedUpdates.paymentterms = updates.paymentTerms;
     if (updates.notes !== undefined) mappedUpdates.notes = updates.notes;
     if (updates.trackingNumber !== undefined) mappedUpdates.tracking_number = updates.trackingNumber;
+    if (updates.trackingPostcode !== undefined) mappedUpdates.tracking_postcode = updates.trackingPostcode;
     if (updates.courier !== undefined) mappedUpdates.courier = updates.courier;
     if (updates.trackingStatus !== undefined) mappedUpdates.tracking_status = updates.trackingStatus;
 

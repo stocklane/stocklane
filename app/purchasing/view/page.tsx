@@ -30,6 +30,7 @@ interface PurchaseOrder {
   vat: number | null;
   totalAmount: number | null;
   trackingNumber: string | null;
+  trackingPostcode: string | null;
   courier: string | null;
   trackingStatus: string | null;
   createdAt: string;
@@ -82,6 +83,7 @@ export default function ViewDataPage() {
     paymentTerms: '',
     notes: '',
     trackingNumber: '',
+    trackingPostcode: '',
     courier: '',
     trackingStatus: 'pending',
   });
@@ -241,11 +243,12 @@ export default function ViewDataPage() {
     return `£${amount.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GBP`;
   };
 
-  const getTrackingUrl = (courier: string | null, number: string | null) => {
+  const getTrackingUrl = (courier: string | null, number: string | null, postcode?: string | null) => {
     if (!courier || !number) return null;
     const c = courier.toLowerCase();
-    if (c.includes('dpd local')) return `https://track.dpdlocal.co.uk/parcel/${number}`;
-    if (c.includes('dpd')) return `https://track.dpd.co.uk/parcel/${number}`;
+    const pc = postcode ? postcode.replace(/\s+/g, '').toUpperCase() : null;
+    if (c.includes('dpd local')) return `https://track.dpdlocal.co.uk/?reference=${number}${pc ? `&postcode=${pc}` : ''}`;
+    if (c.includes('dpd')) return `https://track.dpd.co.uk/?reference=${number}${pc ? `&postcode=${pc}` : ''}`;
     if (c.includes('fedex')) return `https://www.fedex.com/apps/fedextrack/?tracknumbers=${number}`;
     if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${number}`;
     if (c.includes('royal mail') || c.includes('parcelforce')) return `https://www.royalmail.com/track-your-item#/tracking-results/${number}`;
@@ -406,6 +409,7 @@ export default function ViewDataPage() {
       paymentTerms: po.paymentTerms || '',
       notes: po.notes || '',
       trackingNumber: po.trackingNumber || '',
+      trackingPostcode: po.trackingPostcode || '',
       courier: po.courier || '',
       trackingStatus: po.trackingStatus || 'pending',
     });
@@ -974,9 +978,9 @@ export default function ViewDataPage() {
                                     <span className="font-mono text-sm text-amber-600 font-medium">
                                       {po.trackingNumber}
                                     </span>
-                                    {getTrackingUrl(po.courier, po.trackingNumber) && (
+                                    {getTrackingUrl(po.courier, po.trackingNumber, po.trackingPostcode) && (
                                       <a
-                                        href={getTrackingUrl(po.courier, po.trackingNumber)!}
+                                        href={getTrackingUrl(po.courier, po.trackingNumber, po.trackingPostcode)!}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-700 font-semibold underline underline-offset-4"
@@ -1378,6 +1382,20 @@ export default function ViewDataPage() {
                           placeholder="Tracking #"
                         />
                       </div>
+                      {(editFormData.courier === 'DPD' || editFormData.courier === 'DPD Local') && (
+                        <div>
+                          <label className="block text-sm font-medium text-stone-600 dark:text-stone-400 mb-1">
+                            Delivery Postcode
+                          </label>
+                          <input
+                            type="text"
+                            value={editFormData.trackingPostcode}
+                            onChange={(e) => setEditFormData(prev => ({ ...prev, trackingPostcode: e.target.value }))}
+                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-[#f9f9f8] dark:bg-stone-800"
+                            placeholder="e.g. SW1A 1AA"
+                          />
+                        </div>
+                      )}
                       <div>
                         <label className="block text-sm font-medium text-stone-600 dark:text-stone-400 mb-1">
                           Status
