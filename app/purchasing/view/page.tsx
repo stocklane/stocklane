@@ -244,14 +244,13 @@ export default function ViewDataPage() {
   const getTrackingUrl = (courier: string | null, number: string | null) => {
     if (!courier || !number) return null;
     const c = courier.toLowerCase();
-    if (c.includes('dpd local')) return `https://www.dpdlocal.co.uk/tracking/tracking.do?trackingNumber=${number}`;
-    if (c.includes('dpd')) return `https://www.dpd.co.uk/tracking/tracking.do?trackingNumber=${number}`;
+    if (c.includes('dpd local')) return `https://track.dpdlocal.co.uk/parcel/${number}`;
+    if (c.includes('dpd')) return `https://track.dpd.co.uk/parcel/${number}`;
     if (c.includes('fedex')) return `https://www.fedex.com/apps/fedextrack/?tracknumbers=${number}`;
     if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${number}`;
-    if (c.includes('royal mail')) return `https://www.royalmail.com/track-your-item#/tracking-results/${number}`;
+    if (c.includes('royal mail') || c.includes('parcelforce')) return `https://www.royalmail.com/track-your-item#/tracking-results/${number}`;
     if (c.includes('dhl')) return `https://www.dhl.com/en/express/tracking.html?AWB=${number}&brand=DHL`;
-    if (c.includes('evri') || c.includes('hermes')) return `https://www.evri.com/track-a-parcel?trackingNumber=${number}`;
-    if (c.includes('parcelforce')) return `https://www.parcelforce.com/track-trace?trackNumber=${number}`;
+    if (c.includes('evri') || c.includes('hermes')) return `https://www.evri.com/track/parcel/${number}`;
     return null;
   };
 
