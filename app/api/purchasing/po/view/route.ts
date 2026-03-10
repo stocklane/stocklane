@@ -89,6 +89,9 @@ export async function GET(request: NextRequest) {
           extras: po.extras != null ? Number(po.extras) : null,
           vat: po.vat != null ? Number(po.vat) : null,
           totalAmount: po.totalamount != null ? Number(po.totalamount) : null,
+          trackingNumber: po.tracking_number ?? null,
+          courier: po.courier ?? null,
+          trackingStatus: po.tracking_status ?? 'pending',
           createdAt: po.created_at,
         }));
 

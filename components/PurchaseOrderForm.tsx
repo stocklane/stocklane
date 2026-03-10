@@ -196,8 +196,8 @@ export default function PurchaseOrderForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-          <p className="text-sm text-red-400">{error}</p>
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}
 
@@ -326,9 +326,13 @@ export default function PurchaseOrderForm({
             >
               <option value="">-- Select Courier --</option>
               <option value="DPD">DPD</option>
+              <option value="DPD Local">DPD Local</option>
               <option value="FedEx">FedEx</option>
               <option value="UPS">UPS</option>
+              <option value="DHL">DHL</option>
               <option value="Royal Mail">Royal Mail</option>
+              <option value="Evri">Evri</option>
+              <option value="Parcelforce">Parcelforce</option>
               <option value="Other">Other</option>
             </select>
           </div>

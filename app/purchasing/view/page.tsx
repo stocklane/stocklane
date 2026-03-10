@@ -244,10 +244,14 @@ export default function ViewDataPage() {
   const getTrackingUrl = (courier: string | null, number: string | null) => {
     if (!courier || !number) return null;
     const c = courier.toLowerCase();
+    if (c.includes('dpd local')) return `https://www.dpdlocal.co.uk/tracking/tracking.do?trackingNumber=${number}`;
     if (c.includes('dpd')) return `https://www.dpd.co.uk/tracking/tracking.do?trackingNumber=${number}`;
     if (c.includes('fedex')) return `https://www.fedex.com/apps/fedextrack/?tracknumbers=${number}`;
     if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${number}`;
     if (c.includes('royal mail')) return `https://www.royalmail.com/track-your-item#/tracking-results/${number}`;
+    if (c.includes('dhl')) return `https://www.dhl.com/en/express/tracking.html?AWB=${number}&brand=DHL`;
+    if (c.includes('evri') || c.includes('hermes')) return `https://www.evri.com/track-a-parcel?trackingNumber=${number}`;
+    if (c.includes('parcelforce')) return `https://www.parcelforce.com/track-trace?trackNumber=${number}`;
     return null;
   };
 
@@ -1245,8 +1249,8 @@ export default function ViewDataPage() {
       {editingPO && (
         <div className="fixed inset-0 bg-black/70 overflow-y-auto h-full w-full z-50">
           <div className="relative top-3 sm:top-6 mx-auto w-[95vw] max-w-6xl border border-stone-200 dark:border-stone-700 shadow-lg rounded-xl bg-white dark:bg-stone-800 max-h-[92vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <div className="px-4 sm:px-6 py-4 sm:py-5">
-              <div className="flex items-center justify-between gap-3 mb-5">
+            <div className="sticky top-0 z-30 bg-white dark:bg-stone-800 px-4 sm:px-6 py-4 border-b border-stone-200 dark:border-stone-700 rounded-t-xl">
+              <div className="flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-lg sm:text-xl font-semibold text-stone-900 dark:text-stone-100">Edit Purchase Order</h3>
                   <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400">Update header details and line items before saving.</p>
@@ -1263,7 +1267,9 @@ export default function ViewDataPage() {
                   </svg>
                 </button>
               </div>
+            </div>
 
+            <div className="px-4 sm:px-6 py-4 sm:py-5">
               {/* PO Header and Images Side-by-Side */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
                 {/* Left: PO Details */}
@@ -1344,9 +1350,13 @@ export default function ViewDataPage() {
                         >
                           <option value="">-- None --</option>
                           <option value="DPD">DPD</option>
+                          <option value="DPD Local">DPD Local</option>
                           <option value="FedEx">FedEx</option>
                           <option value="UPS">UPS</option>
+                          <option value="DHL">DHL</option>
                           <option value="Royal Mail">Royal Mail</option>
+                          <option value="Evri">Evri</option>
+                          <option value="Parcelforce">Parcelforce</option>
                           <option value="Other">Other</option>
                         </select>
                       </div>
@@ -1473,26 +1483,26 @@ export default function ViewDataPage() {
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="block text-[10px] font-medium text-stone-500 uppercase tracking-wide mb-1">
+                          <label className="block text-[10px] font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wide mb-1">
                             SKU
                           </label>
                           <input
                             type="text"
                             value={line.supplierSku || ''}
                             onChange={(e) => handleUpdateLineItem(line.id, 'supplierSku', e.target.value || null)}
-                            className="w-full px-2 py-2 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                            className="w-full px-2 py-2 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                             placeholder="SKU"
                           />
                         </div>
                         <div>
-                          <label className="block text-[10px] font-medium text-stone-500 uppercase tracking-wide mb-1">
+                          <label className="block text-[10px] font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wide mb-1">
                             Quantity
                           </label>
                           <input
                             type="number"
                             value={line.quantity}
                             onChange={(e) => handleUpdateLineItem(line.id, 'quantity', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2 py-2 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                            className="w-full px-2 py-2 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                             min="0"
                             step="1"
                           />
@@ -1500,27 +1510,27 @@ export default function ViewDataPage() {
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="block text-[10px] font-medium text-stone-500 uppercase tracking-wide mb-1">
+                          <label className="block text-[10px] font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wide mb-1">
                             Unit Price
                           </label>
                           <input
                             type="number"
                             value={line.unitCostExVAT}
                             onChange={(e) => handleUpdateLineItem(line.id, 'unitCostExVAT', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2 py-2 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                            className="w-full px-2 py-2 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                             min="0"
                             step="0.01"
                           />
                         </div>
                         <div>
-                          <label className="block text-[10px] font-medium text-stone-500 uppercase tracking-wide mb-1">
+                          <label className="block text-[10px] font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wide mb-1">
                             RRP
                           </label>
                           <input
                             type="number"
                             value={line.rrp || ''}
                             onChange={(e) => handleUpdateLineItem(line.id, 'rrp', parseFloat(e.target.value) || null)}
-                            className="w-full px-2 py-2 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                            className="w-full px-2 py-2 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                             min="0"
                             step="0.01"
                             placeholder="Optional"
@@ -1528,10 +1538,10 @@ export default function ViewDataPage() {
                         </div>
                       </div>
                       <div>
-                        <label className="block text-[10px] font-medium text-stone-500 uppercase tracking-wide mb-1">
+                        <label className="block text-[10px] font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wide mb-1">
                           Total
                         </label>
-                        <div className="px-2 py-2 border border-stone-200 rounded text-sm text-stone-900 bg-white">
+                        <div className="px-2 py-2 border border-stone-200 dark:border-stone-700 rounded text-sm text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900">
                           £{(line.lineTotalExVAT || 0).toFixed(2)} GBP
                         </div>
                       </div>
@@ -1546,33 +1556,33 @@ export default function ViewDataPage() {
                 </div>
 
                 <div className="hidden sm:block overflow-x-auto">
-                  <table className="min-w-full divide-y divide-stone-200">
-                    <thead className="bg-white">
+                  <table className="min-w-full divide-y divide-stone-200 dark:divide-stone-700">
+                    <thead className="bg-[#f9f9f8] dark:bg-stone-900">
                       <tr>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           Description
                         </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           SKU
                         </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           Quantity
                         </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           Unit Price
                         </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           RRP
                         </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           Total
                         </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">
+                        <th className="px-3 py-3 text-left text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">
                           Actions
                         </th>
                       </tr>
                     </thead>
-                    <tbody className="bg-[#f9f9f8] divide-y divide-stone-200">
+                    <tbody className="bg-white dark:bg-stone-800 divide-y divide-stone-200 dark:divide-stone-700">
                       {editingLines.map((line) => (
                         <tr key={line.id} className="hover:bg-stone-50 dark:hover:bg-stone-700/20">
                           <td className="px-3 py-3">
@@ -1580,7 +1590,7 @@ export default function ViewDataPage() {
                               type="text"
                               value={line.description}
                               onChange={(e) => handleUpdateLineItem(line.id, 'description', e.target.value)}
-                              className="w-full px-2 py-1 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                              className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                               placeholder="Item description"
                             />
                           </td>
@@ -1589,7 +1599,7 @@ export default function ViewDataPage() {
                               type="text"
                               value={line.supplierSku || ''}
                               onChange={(e) => handleUpdateLineItem(line.id, 'supplierSku', e.target.value || null)}
-                              className="w-full px-2 py-1 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                              className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                               placeholder="SKU"
                             />
                           </td>
@@ -1598,7 +1608,7 @@ export default function ViewDataPage() {
                               type="number"
                               value={line.quantity}
                               onChange={(e) => handleUpdateLineItem(line.id, 'quantity', parseFloat(e.target.value) || 0)}
-                              className="w-full px-2 py-1 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                              className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                               min="0"
                               step="1"
                             />
@@ -1608,7 +1618,7 @@ export default function ViewDataPage() {
                               type="number"
                               value={line.unitCostExVAT}
                               onChange={(e) => handleUpdateLineItem(line.id, 'unitCostExVAT', parseFloat(e.target.value) || 0)}
-                              className="w-full px-2 py-1 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                              className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                               min="0"
                               step="0.01"
                             />
@@ -1618,13 +1628,13 @@ export default function ViewDataPage() {
                               type="number"
                               value={line.rrp || ''}
                               onChange={(e) => handleUpdateLineItem(line.id, 'rrp', parseFloat(e.target.value) || null)}
-                              className="w-full px-2 py-1 border border-stone-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 bg-white"
+                              className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-600 text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900"
                               min="0"
                               step="0.01"
                               placeholder="Optional"
                             />
                           </td>
-                          <td className="px-3 py-3 text-sm font-medium text-stone-900">
+                          <td className="px-3 py-3 text-sm font-medium text-stone-900 dark:text-stone-100">
                             £{(line.lineTotalExVAT || 0).toFixed(2)} GBP
                           </td>
                           <td className="px-3 py-3">
@@ -1650,8 +1660,10 @@ export default function ViewDataPage() {
                   </div>
                 )}
               </div>
+            </div>
 
-              <div className="flex flex-col sm:flex-row justify-end gap-3 mt-6">
+            <div className="sticky bottom-0 z-30 bg-white dark:bg-stone-800 px-4 sm:px-6 py-4 border-t border-stone-200 dark:border-stone-700 rounded-b-xl">
+              <div className="flex flex-col sm:flex-row justify-end gap-3">
                 <button
                   onClick={() => {
                     setEditingPO(null);
@@ -1687,11 +1699,11 @@ export default function ViewDataPage() {
 
       {/* Export Month Selection Modal */}
       {showExportModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-70 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-20 mx-auto p-5 border border-stone-200 w-96 shadow-lg rounded-md bg-white">
+        <div className="fixed inset-0 bg-black bg-opacity-70 overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4">
+          <div className="relative mx-auto p-5 border border-stone-200 dark:border-stone-700 w-full max-w-md shadow-lg rounded-xl bg-white dark:bg-stone-800">
             <div className="mt-3">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium text-stone-900">Select Months to Export</h3>
+                <h3 className="text-lg font-semibold text-stone-900 dark:text-stone-100">Select Months to Export</h3>
                 <button
                   onClick={() => setShowExportModal(false)}
                   className="text-stone-500 hover:text-amber-600"
@@ -1711,7 +1723,7 @@ export default function ViewDataPage() {
                 </button>
                 <button
                   onClick={handleDeselectAllMonths}
-                  className="px-3 py-1 text-xs font-medium text-stone-900 bg-stone-100 rounded hover:bg-stone-200"
+                  className="px-3 py-1 text-xs font-medium text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-700 rounded hover:bg-stone-200 dark:hover:bg-stone-600"
                 >
                   Deselect All
                 </button>
@@ -1721,17 +1733,17 @@ export default function ViewDataPage() {
                 {Object.entries(groupPOsByMonth()).map(([month, pos]) => (
                   <label
                     key={month}
-                    className="flex items-center p-3 border border-stone-200 rounded-lg hover:bg-stone-100 cursor-pointer"
+                    className="flex items-center p-3 border border-stone-200 dark:border-stone-700 rounded-lg hover:bg-stone-50 dark:hover:bg-stone-700/50 cursor-pointer"
                   >
                     <input
                       type="checkbox"
                       checked={selectedMonths.includes(month)}
                       onChange={() => handleMonthToggle(month)}
-                      className="h-4 w-4 text-amber-600 focus:ring-amber-600 border-stone-200 rounded"
+                      className="h-4 w-4 text-amber-600 focus:ring-amber-600 border-stone-200 dark:border-stone-700 rounded bg-white dark:bg-stone-900"
                     />
                     <div className="ml-3 flex-1">
-                      <span className="text-sm font-medium text-stone-900">{month}</span>
-                      <span className="ml-2 text-xs text-stone-500">
+                      <span className="text-sm font-medium text-stone-900 dark:text-stone-100">{month}</span>
+                      <span className="ml-2 text-xs text-stone-500 dark:text-stone-400">
                         ({pos.length} PO{pos.length !== 1 ? 's' : ''})
                       </span>
                     </div>
@@ -1742,7 +1754,7 @@ export default function ViewDataPage() {
               <div className="flex justify-end gap-3 mt-6">
                 <button
                   onClick={() => setShowExportModal(false)}
-                  className="px-4 py-2 text-sm font-medium text-stone-900 bg-stone-100 border border-stone-300 rounded-md hover:bg-stone-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-600"
+                  className="px-4 py-2 text-sm font-medium text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-700 border border-stone-300 dark:border-stone-600 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-600"
                 >
                   Cancel
                 </button>
@@ -1767,11 +1779,11 @@ export default function ViewDataPage() {
       {/* Notes Modal */}
       {showNotesModal && selectedNotes && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-stone-200">
-            <div className="flex items-center justify-between p-6 border-b border-stone-200">
+          <div className="bg-white dark:bg-stone-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-stone-200 dark:border-stone-700">
+            <div className="flex items-center justify-between p-6 border-b border-stone-200 dark:border-stone-700">
               <div>
-                <h3 className="text-lg font-semibold text-stone-900">Purchase Order Notes</h3>
-                <p className="text-sm text-stone-500 mt-1">
+                <h3 className="text-lg font-semibold text-stone-900 dark:text-stone-100">Purchase Order Notes</h3>
+                <p className="text-sm text-stone-500 dark:text-stone-400 mt-1">
                   {selectedNotes.supplierName} - {selectedNotes.invoiceNumber}
                 </p>
               </div>
@@ -1786,15 +1798,15 @@ export default function ViewDataPage() {
             </div>
 
             <div className="p-6">
-              <div className="bg-[#f9f9f8] rounded-lg p-4 border border-stone-200">
-                <h4 className="text-sm font-semibold text-stone-600 mb-3">Notes & Instructions</h4>
-                <div className="text-sm text-stone-900 whitespace-pre-wrap leading-relaxed">
+              <div className="bg-[#f9f9f8] dark:bg-stone-900 rounded-lg p-4 border border-stone-200 dark:border-stone-700">
+                <h4 className="text-sm font-semibold text-stone-600 dark:text-stone-400 mb-3">Notes & Instructions</h4>
+                <div className="text-sm text-stone-900 dark:text-stone-100 whitespace-pre-wrap leading-relaxed">
                   {selectedNotes.notes}
                 </div>
               </div>
             </div>
 
-            <div className="flex justify-end p-6 border-t border-stone-200">
+            <div className="flex justify-end p-6 border-t border-stone-200 dark:border-stone-700">
               <button
                 onClick={handleCloseNotesModal}
                 className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-600"
