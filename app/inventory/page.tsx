@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { authenticatedFetch } from '@/lib/api-client';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface Supplier {
   id: string;
@@ -46,6 +47,11 @@ interface InventoryRow {
   quantityInTransit: number;
   supplier: Supplier | null;
 }
+
+type ConfirmState =
+  | { type: 'none' }
+  | { type: 'deleteProduct'; product: Product }
+  | { type: 'deleteFolder'; folderId: string; folderName: string };
 
 const MobileBarcodeScanner = dynamic(
   () => import('@/components/MobileBarcodeScanner'),
@@ -90,7 +96,9 @@ export default function InventoryPage() {
   }, [foldersPanelCollapsed]);
 
   const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
+  const [confirmState, setConfirmState] = useState<ConfirmState>({ type: 'none' });
 
   const [customFolders, setCustomFolders] = useState<
     { id: string; name: string; dbId?: string; parentId?: string | null }[]
@@ -458,15 +466,7 @@ export default function InventoryPage() {
     }
   };
 
-  const handleDeleteProduct = async (product: Product) => {
-    if (
-      !window.confirm(
-        `Delete "${product.name}" from inventory? This will also remove any on-hand and in-transit records for this product.`,
-      )
-    ) {
-      return;
-    }
-
+  const runDeleteProduct = async (product: Product) => {
     try {
       setDeletingProductId(product.id);
       const res = await authenticatedFetch(
@@ -484,7 +484,16 @@ export default function InventoryPage() {
       alert(err instanceof Error ? err.message : 'Failed to delete product');
     } finally {
       setDeletingProductId(null);
+      setConfirmState((current) =>
+        current.type === 'deleteProduct' && current.product.id === product.id
+          ? { type: 'none' }
+          : current,
+      );
     }
+  };
+
+  const handleDeleteProduct = (product: Product) => {
+    setConfirmState({ type: 'deleteProduct', product });
   };
 
   const showToast = (message: string) => {
@@ -606,16 +615,13 @@ export default function InventoryPage() {
     }
   };
 
-  const handleDeleteFolder = async (folderId: string) => {
+  const runDeleteFolder = async (folderId: string) => {
     // Do not allow deleting the synthetic "all" folder or category-based folders
     const folder = customFolders.find((f) => f.id === folderId);
     if (!folder) return;
 
-    // eslint-disable-next-line no-alert
-    const confirmed = window.confirm('Delete this folder? This cannot be undone.');
-    if (!confirmed) return;
-
     try {
+      setDeletingFolderId(folderId);
       const res = await authenticatedFetch(
         `/api/folders?id=${encodeURIComponent(folder.dbId || folderId)}`,
         {
@@ -636,7 +642,20 @@ export default function InventoryPage() {
     } catch (err) {
       // eslint-disable-next-line no-alert
       alert(err instanceof Error ? err.message : 'Failed to delete folder');
+    } finally {
+      setDeletingFolderId(null);
+      setConfirmState((current) =>
+        current.type === 'deleteFolder' && current.folderId === folderId
+          ? { type: 'none' }
+          : current,
+      );
     }
+  };
+
+  const handleDeleteFolder = (folderId: string) => {
+    const folder = customFolders.find((f) => f.id === folderId);
+    if (!folder) return;
+    setConfirmState({ type: 'deleteFolder', folderId, folderName: folder.name });
   };
 
   const handleProductDragStart = (
@@ -764,6 +783,32 @@ export default function InventoryPage() {
     } catch (err) {
       // eslint-disable-next-line no-alert
       alert(err instanceof Error ? err.message : 'Failed to move folder');
+    }
+  };
+
+  const confirmDialogOpen = confirmState.type !== 'none';
+  const confirmDialogTitle =
+    confirmState.type === 'deleteProduct' ? 'Delete product?' : 'Delete folder?';
+  const confirmDialogMessage =
+    confirmState.type === 'deleteProduct'
+      ? `Delete "${confirmState.product.name}" from inventory? This will also remove any on-hand and in-transit records for this product.`
+      : confirmState.type === 'deleteFolder'
+        ? `Delete "${confirmState.folderName}"? This cannot be undone.`
+        : '';
+  const confirmDialogLoading =
+    confirmState.type === 'deleteProduct'
+      ? deletingProductId === confirmState.product.id
+      : confirmState.type === 'deleteFolder'
+        ? deletingFolderId === confirmState.folderId
+        : false;
+
+  const handleConfirmDialogConfirm = () => {
+    if (confirmState.type === 'deleteProduct') {
+      void runDeleteProduct(confirmState.product);
+      return;
+    }
+    if (confirmState.type === 'deleteFolder') {
+      void runDeleteFolder(confirmState.folderId);
     }
   };
 
@@ -1320,7 +1365,8 @@ export default function InventoryPage() {
                               <button
                                 type="button"
                                 onClick={() => handleDeleteFolder(folder.id)}
-                                className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50"
+                                disabled={deletingFolderId === folder.id}
+                                className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50"
                                 aria-label="Delete folder"
                               >
                                 ×
@@ -1673,7 +1719,7 @@ export default function InventoryPage() {
                           </button>
                         )}
                         {isCustom && (
-                          <button type="button" onClick={() => handleDeleteFolder(folder.id)} className="inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50">×</button>
+                          <button type="button" onClick={() => handleDeleteFolder(folder.id)} disabled={deletingFolderId === folder.id} className="inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50">×</button>
                         )}
                       </div>
                     </div>
@@ -1684,6 +1730,21 @@ export default function InventoryPage() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={confirmDialogOpen}
+        title={confirmDialogTitle}
+        message={confirmDialogMessage}
+        confirmLabel="Delete"
+        confirmTone="danger"
+        isConfirming={confirmDialogLoading}
+        onCancel={() => {
+          if (!confirmDialogLoading) {
+            setConfirmState({ type: 'none' });
+          }
+        }}
+        onConfirm={handleConfirmDialogConfirm}
+      />
     </div>
   );
 }

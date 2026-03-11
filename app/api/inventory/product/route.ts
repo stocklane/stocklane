@@ -47,7 +47,11 @@ export async function GET(request: NextRequest) {
         supabase.from('polines').select('*'),
         supabase.from('purchaseorders').select('*'),
         supabase.from('invoices').select('*'),
-        supabase.from('product_integrations').select('*').eq('product_id', id),
+        supabase
+          .from('product_integrations')
+          .select('*')
+          .eq('product_id', id)
+          .eq('user_id', user.id),
       ]);
 
     const inventoryRows = inventoryRes.data || [];
@@ -76,6 +80,11 @@ export async function GET(request: NextRequest) {
       category: productRow.category ?? null,
       tags: productRow.tags ?? [],
       imageUrl: productRow.imageurl ?? null,
+      pricingGreenlight: !!productRow.pricing_greenlight,
+      targetMargin: productRow.target_margin != null ? Number(productRow.target_margin) : null,
+      pricingSalesTaxPct: Number(productRow.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(productRow.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(productRow.pricing_postage_packaging_gbp ?? 0),
       createdAt: productRow.created_at,
       updatedAt: productRow.updated_at,
     };
@@ -356,6 +365,58 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    if ('pricingGreenlight' in body) {
+      updates.pricing_greenlight = !!body.pricingGreenlight;
+    }
+
+    if ('targetMargin' in body) {
+      if (body.targetMargin === null || body.targetMargin === '') {
+        updates.target_margin = null;
+      } else {
+        const parsed = Number(body.targetMargin);
+        if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 100) {
+          return NextResponse.json(
+            { error: 'targetMargin must be a number between 0 and 100' },
+            { status: 400 }
+          );
+        }
+        updates.target_margin = parsed;
+      }
+    }
+
+    if ('pricingSalesTaxPct' in body) {
+      const parsed = Number(body.pricingSalesTaxPct);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        return NextResponse.json(
+          { error: 'pricingSalesTaxPct must be between 0 and 100' },
+          { status: 400 }
+        );
+      }
+      updates.pricing_sales_tax_pct = parsed;
+    }
+
+    if ('pricingShopifyFeePct' in body) {
+      const parsed = Number(body.pricingShopifyFeePct);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        return NextResponse.json(
+          { error: 'pricingShopifyFeePct must be between 0 and 100' },
+          { status: 400 }
+        );
+      }
+      updates.pricing_shopify_fee_pct = parsed;
+    }
+
+    if ('pricingPostagePackagingGbp' in body) {
+      const parsed = Number(body.pricingPostagePackagingGbp);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return NextResponse.json(
+          { error: 'pricingPostagePackagingGbp must be a non-negative number' },
+          { status: 400 }
+        );
+      }
+      updates.pricing_postage_packaging_gbp = parsed;
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
         { error: 'No valid fields provided for update' },
@@ -391,6 +452,11 @@ export async function PUT(request: NextRequest) {
       category: updatedRow.category ?? null,
       tags: updatedRow.tags ?? [],
       imageUrl: updatedRow.imageurl ?? null,
+      pricingGreenlight: !!updatedRow.pricing_greenlight,
+      targetMargin: updatedRow.target_margin != null ? Number(updatedRow.target_margin) : null,
+      pricingSalesTaxPct: Number(updatedRow.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(updatedRow.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(updatedRow.pricing_postage_packaging_gbp ?? 0),
       createdAt: updatedRow.created_at,
       updatedAt: updatedRow.updated_at,
     }
@@ -436,6 +502,12 @@ export async function POST(request: NextRequest) {
     };
 
     const insertPayload: any = {
+      // Pricing settings defaults for margin automation
+      pricing_greenlight: !!body.pricingGreenlight,
+      target_margin: null as number | null,
+      pricing_sales_tax_pct: 0,
+      pricing_shopify_fee_pct: 0,
+      pricing_postage_packaging_gbp: 0,
       name: rawName,
       primarysku: normalizeOptionalString(body.primarySku),
       suppliersku: normalizeOptionalString(body.supplierSku),
@@ -449,6 +521,42 @@ export async function POST(request: NextRequest) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
+
+    if (body.targetMargin !== null && body.targetMargin !== undefined && body.targetMargin !== '') {
+      const parsed = Number(body.targetMargin);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 100) {
+        return NextResponse.json(
+          { error: 'targetMargin must be a number between 0 and 100' },
+          { status: 400 },
+        );
+      }
+      insertPayload.target_margin = parsed;
+    }
+
+    const parsedTax = Number(body.pricingSalesTaxPct ?? 0);
+    const parsedFee = Number(body.pricingShopifyFeePct ?? 0);
+    const parsedPostage = Number(body.pricingPostagePackagingGbp ?? 0);
+    if (!Number.isFinite(parsedTax) || parsedTax < 0 || parsedTax > 100) {
+      return NextResponse.json(
+        { error: 'pricingSalesTaxPct must be between 0 and 100' },
+        { status: 400 },
+      );
+    }
+    if (!Number.isFinite(parsedFee) || parsedFee < 0 || parsedFee > 100) {
+      return NextResponse.json(
+        { error: 'pricingShopifyFeePct must be between 0 and 100' },
+        { status: 400 },
+      );
+    }
+    if (!Number.isFinite(parsedPostage) || parsedPostage < 0) {
+      return NextResponse.json(
+        { error: 'pricingPostagePackagingGbp must be a non-negative number' },
+        { status: 400 },
+      );
+    }
+    insertPayload.pricing_sales_tax_pct = parsedTax;
+    insertPayload.pricing_shopify_fee_pct = parsedFee;
+    insertPayload.pricing_postage_packaging_gbp = parsedPostage;
 
     const { data: newProduct, error } = await supabase
       .from('products')
@@ -475,6 +583,11 @@ export async function POST(request: NextRequest) {
       category: newProduct.category ?? null,
       tags: newProduct.tags ?? [],
       imageUrl: newProduct.imageurl ?? null,
+      pricingGreenlight: !!newProduct.pricing_greenlight,
+      targetMargin: newProduct.target_margin != null ? Number(newProduct.target_margin) : null,
+      pricingSalesTaxPct: Number(newProduct.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(newProduct.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(newProduct.pricing_postage_packaging_gbp ?? 0),
       createdAt: newProduct.created_at,
       updatedAt: newProduct.updated_at,
     };

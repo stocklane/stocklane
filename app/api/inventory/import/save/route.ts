@@ -14,6 +14,26 @@ interface ImportRow {
   supplier?: string | null;
 }
 
+function generateInternalSku(usedSkuLower: Set<string>): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let suffix = '';
+    for (let i = 0; i < 8; i++) {
+      suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+    const candidate = `SL-${suffix}`;
+    const key = candidate.toLowerCase();
+    if (!usedSkuLower.has(key)) {
+      usedSkuLower.add(key);
+      return candidate;
+    }
+  }
+
+  const fallback = `SL-${Date.now().toString(36).toUpperCase()}`;
+  usedSkuLower.add(fallback.toLowerCase());
+  return fallback;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
@@ -39,6 +59,15 @@ export async function POST(request: NextRequest) {
       .eq('user_id', user.id);
 
     const products = (existingProducts as any[]) || [];
+    const usedSkuLower = new Set<string>();
+    products.forEach((p: any) => {
+      if (typeof p.primarysku === 'string' && p.primarysku.trim()) {
+        usedSkuLower.add(p.primarysku.trim().toLowerCase());
+      }
+      if (typeof p.suppliersku === 'string' && p.suppliersku.trim()) {
+        usedSkuLower.add(p.suppliersku.trim().toLowerCase());
+      }
+    });
 
     // Fetch existing suppliers for matching by name
     const { data: existingSuppliers } = await supabase
@@ -140,12 +169,15 @@ export async function POST(request: NextRequest) {
         productId = matchedProduct.id;
         updated++;
       } else {
+        const resolvedPrimarySku =
+          primarySku || supplierSku || generateInternalSku(usedSkuLower);
+
         // Create new product
         const { data: newProduct, error: insertError } = await supabase
           .from('products')
           .insert({
             name: rawName,
-            primarysku: primarySku,
+            primarysku: resolvedPrimarySku,
             suppliersku: supplierSku,
             barcodes,
             aliases: [],

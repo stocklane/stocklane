@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
             variants(first: 50) {
               edges {
                 node {
-                  id sku barcode price inventoryQuantity
+                  id title sku barcode price inventoryQuantity
                   inventoryItem { id }
                 }
               }
@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
           rawVariants.push({
             pId: p.id,
             vId: v.id,
-            title: p.title,
+            title: v.title && v.title !== 'Default Title' ? `${p.title} (${v.title})` : p.title,
             sku: v.sku,
             barcode: v.barcode,
             qty: Math.max(0, parseInt(v.inventoryQuantity) || 0),

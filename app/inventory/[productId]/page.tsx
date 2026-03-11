@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
 import dynamic from 'next/dynamic';
-import { useSearchParams, useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { authenticatedFetch } from '@/lib/api-client';
 
 interface Supplier {
@@ -27,6 +26,11 @@ interface Product {
   category: string | null;
   tags: string[];
   imageUrl: string | null;
+  pricingGreenlight: boolean;
+  targetMargin: number | null;
+  pricingSalesTaxPct: number;
+  pricingShopifyFeePct: number;
+  pricingPostagePackagingGbp: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,6 +139,11 @@ export default function ProductHistoryPage() {
     tags: '',
     aliases: '',
     imageUrl: '',
+    pricingGreenlight: false,
+    targetMargin: '',
+    pricingSalesTaxPct: '',
+    pricingShopifyFeePct: '',
+    pricingPostagePackagingGbp: '',
   });
   const [deleting, setDeleting] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -172,6 +181,12 @@ export default function ProductHistoryPage() {
         tags: (data.product.tags || []).join(', '),
         aliases: (data.product.aliases || []).join(', '),
         imageUrl: data.product.imageUrl || '',
+        pricingGreenlight: !!data.product.pricingGreenlight,
+        targetMargin:
+          data.product.targetMargin == null ? '' : String(data.product.targetMargin),
+        pricingSalesTaxPct: String(data.product.pricingSalesTaxPct ?? 0),
+        pricingShopifyFeePct: String(data.product.pricingShopifyFeePct ?? 0),
+        pricingPostagePackagingGbp: String(data.product.pricingPostagePackagingGbp ?? 0),
       });
     }
 
@@ -208,7 +223,10 @@ export default function ProductHistoryPage() {
     return `£${amount.toFixed(2)} GBP`;
   };
 
-  const handleEditFieldChange = (field: keyof typeof editForm, value: string) => {
+  const handleEditFieldChange = (
+    field: keyof typeof editForm,
+    value: string | boolean,
+  ) => {
     setEditForm((prev) => ({
       ...prev,
       [field]: value,
@@ -246,6 +264,21 @@ export default function ProductHistoryPage() {
         tags: normalizeList(editForm.tags),
         aliases: normalizeList(editForm.aliases),
         imageUrl: editForm.imageUrl.trim() || null,
+        pricingGreenlight: editForm.pricingGreenlight,
+        targetMargin:
+          editForm.targetMargin.trim() === '' ? null : Number(editForm.targetMargin),
+        pricingSalesTaxPct:
+          editForm.pricingSalesTaxPct.trim() === ''
+            ? 0
+            : Number(editForm.pricingSalesTaxPct),
+        pricingShopifyFeePct:
+          editForm.pricingShopifyFeePct.trim() === ''
+            ? 0
+            : Number(editForm.pricingShopifyFeePct),
+        pricingPostagePackagingGbp:
+          editForm.pricingPostagePackagingGbp.trim() === ''
+            ? 0
+            : Number(editForm.pricingPostagePackagingGbp),
       };
 
       const res = await authenticatedFetch(
@@ -554,10 +587,49 @@ export default function ProductHistoryPage() {
   const displayUnitPrice = totalStockForValue > 0 ? totalValue / totalStockForValue : 0;
   const isLongProductName = (product.name || '').length > 40;
 
+  const configuredMarginPct =
+    editForm.targetMargin.trim() === ''
+      ? product.targetMargin ?? 0
+      : Number(editForm.targetMargin);
+  const configuredTaxPct = Number(
+    editForm.pricingSalesTaxPct.trim() === ''
+      ? product.pricingSalesTaxPct
+      : editForm.pricingSalesTaxPct,
+  );
+  const configuredFeePct = Number(
+    editForm.pricingShopifyFeePct.trim() === ''
+      ? product.pricingShopifyFeePct
+      : editForm.pricingShopifyFeePct,
+  );
+  const configuredPostage = Number(
+    editForm.pricingPostagePackagingGbp.trim() === ''
+      ? product.pricingPostagePackagingGbp
+      : editForm.pricingPostagePackagingGbp,
+  );
+
+  const marginRate = configuredMarginPct / 100;
+  const deductionRate = configuredTaxPct / 100 + configuredFeePct / 100;
+  const calculatorValid =
+    Number.isFinite(configuredMarginPct) &&
+    Number.isFinite(configuredTaxPct) &&
+    Number.isFinite(configuredFeePct) &&
+    Number.isFinite(configuredPostage) &&
+    configuredMarginPct > 0 &&
+    configuredMarginPct < 100 &&
+    configuredTaxPct >= 0 &&
+    configuredFeePct >= 0 &&
+    configuredPostage >= 0 &&
+    marginRate < 1 &&
+    deductionRate < 1;
+
+  const projectedShopifyPrice = calculatorValid
+    ? ((Math.max(0, displayUnitPrice) + configuredPostage) / (1 - marginRate)) / (1 - deductionRate)
+    : null;
+
   return (
     <div className="h-full overflow-y-auto bg-[#f9f9f8] dark:bg-stone-900">
       <div className="py-4 sm:py-6 px-3 sm:px-6 lg:px-8">
-        <div className="max-w-[1400px] mx-auto space-y-5">
+        <div className="max-w-[1400px] mx-auto space-y-4">
           {/* Header row - Sortly style */}
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div className="min-w-0">
@@ -595,6 +667,14 @@ export default function ProductHistoryPage() {
                           tags: (data.product.tags || []).join(', '),
                           aliases: (data.product.aliases || []).join(', '),
                           imageUrl: data.product.imageUrl || '',
+                          pricingGreenlight: !!data.product.pricingGreenlight,
+                          targetMargin:
+                            data.product.targetMargin == null
+                              ? ''
+                              : String(data.product.targetMargin),
+                          pricingSalesTaxPct: String(data.product.pricingSalesTaxPct ?? 0),
+                          pricingShopifyFeePct: String(data.product.pricingShopifyFeePct ?? 0),
+                          pricingPostagePackagingGbp: String(data.product.pricingPostagePackagingGbp ?? 0),
                         });
                       }
                     }}
@@ -628,15 +708,16 @@ export default function ProductHistoryPage() {
           </div>
 
           {/* Two-column body - Sortly style */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            {/* Left column: Product Information with image */}
-            <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5 flex flex-col">
-              <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-4">Product Information</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+            {/* Left column: Product identity + image */}
+            <div className="space-y-4">
+              <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5 flex flex-col">
+                <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-4">Product Information</h2>
 
               {/* Large product image - Sortly style */}
               <div className="mb-4">
                 <div className="flex justify-center">
-                  <div className="relative w-full h-[220px] sm:h-[280px] md:h-[340px] rounded-lg overflow-hidden border border-stone-200 bg-[#f9f9f8]">
+                  <div className="relative w-full h-[180px] sm:h-[210px] md:h-[240px] rounded-lg overflow-hidden border border-stone-200 bg-[#f9f9f8]">
                     {editing ? (
                       editForm.imageUrl.trim() ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -679,52 +760,11 @@ export default function ProductHistoryPage() {
                 </div>
               )}
 
-              {/* Notes / Aliases */}
-              <div className="border-t border-stone-200 dark:border-stone-700 pt-4 mt-auto">
-                <p className="text-xs text-stone-500 dark:text-stone-400 mb-2">Notes</p>
-                {editing ? (
-                  <input
-                    value={editForm.aliases}
-                    onChange={(e) => handleEditFieldChange('aliases', e.target.value)}
-                    placeholder="Alternative names, notes, etc."
-                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-sm px-3 py-2 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                  />
-                ) : (
-                  <p className="text-sm text-stone-600 dark:text-stone-400">
-                    {product.aliases && product.aliases.length
-                      ? product.aliases.join(' / ')
-                      : '-'}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Right column: Metrics 2x2 + Details */}
-            <div className="space-y-5">
-              {/* Metrics 2x2 grid */}
-              <div className="grid grid-cols-2 gap-2 sm:gap-3">
-                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
-                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">In hand</p>
-                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">{inventory?.quantityOnHand || 0}</p>
-                </div>
-                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
-                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">In Transit</p>
-                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">{inTransitQty}</p>
-                </div>
-                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
-                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">Price/unit</p>
-                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">£{displayUnitPrice.toFixed(2)}</p>
-                </div>
-                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
-                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">Total value</p>
-                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">£{totalValue.toFixed(2)}</p>
-                </div>
               </div>
 
-              {/* Product Details card */}
-              <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5">
+              <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
                 <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-4">Product Details</h2>
-                <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Name</p>
                     {editing ? (
@@ -767,7 +807,155 @@ export default function ProductHistoryPage() {
                     <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Supplier</p>
                     <p className="text-sm text-stone-900 dark:text-stone-100">{supplier?.name || '-'}</p>
                   </div>
-                  <div>
+                  <div className="sm:col-span-2 border-t border-stone-200 dark:border-stone-700 pt-3">
+                    <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Notes</p>
+                    {editing ? (
+                      <input
+                        value={editForm.aliases}
+                        onChange={(e) => handleEditFieldChange('aliases', e.target.value)}
+                        placeholder="Alternative names, notes, etc."
+                        className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-sm px-3 py-2 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                      />
+                    ) : (
+                      <p className="text-sm text-stone-600 dark:text-stone-400 max-h-14 overflow-y-auto pr-1">
+                        {product.aliases && product.aliases.length
+                          ? product.aliases.join(' / ')
+                          : '-'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Right column: Metrics 2x2 + Details */}
+              <div className="space-y-4">
+              {/* Metrics 2x2 grid */}
+              <div className="grid grid-cols-2 gap-2 sm:gap-3">
+                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
+                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">In hand</p>
+                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">{inventory?.quantityOnHand || 0}</p>
+                </div>
+                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
+                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">In Transit</p>
+                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">{inTransitQty}</p>
+                </div>
+                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
+                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">Price/unit</p>
+                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">£{displayUnitPrice.toFixed(2)}</p>
+                </div>
+                <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-3 sm:p-4">
+                  <p className="text-[10px] sm:text-xs text-stone-500 dark:text-stone-400 mb-1">Total value</p>
+                  <p className="text-xl sm:text-2xl font-bold text-stone-900 dark:text-stone-100">£{totalValue.toFixed(2)}</p>
+                </div>
+              </div>
+
+              {/* Pricing automation card */}
+              <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
+                <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-4">Pricing Automation</h2>
+                <div className="space-y-4">
+                  <div className="rounded-md border border-stone-200 dark:border-stone-700 p-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400 mb-1">Target margin %</p>
+                        {editing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            max={99.99}
+                            step="0.01"
+                            value={editForm.targetMargin}
+                            onChange={(e) => handleEditFieldChange('targetMargin', e.target.value)}
+                            className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-sm px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                          />
+                        ) : (
+                          <p className="text-sm text-stone-900 dark:text-stone-100">
+                            {product.targetMargin != null ? `${product.targetMargin}%` : '-'}
+                          </p>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400 mb-1">Sales tax %</p>
+                        {editing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            value={editForm.pricingSalesTaxPct}
+                            onChange={(e) => handleEditFieldChange('pricingSalesTaxPct', e.target.value)}
+                            className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-sm px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                          />
+                        ) : (
+                          <p className="text-sm text-stone-900 dark:text-stone-100">{product.pricingSalesTaxPct}%</p>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400 mb-1">Shopify fee %</p>
+                        {editing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            value={editForm.pricingShopifyFeePct}
+                            onChange={(e) => handleEditFieldChange('pricingShopifyFeePct', e.target.value)}
+                            className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-sm px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                          />
+                        ) : (
+                          <p className="text-sm text-stone-900 dark:text-stone-100">{product.pricingShopifyFeePct}%</p>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400 mb-1">Postage/packaging £</p>
+                        {editing ? (
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={editForm.pricingPostagePackagingGbp}
+                            onChange={(e) => handleEditFieldChange('pricingPostagePackagingGbp', e.target.value)}
+                            className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-sm px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                          />
+                        ) : (
+                          <p className="text-sm text-stone-900 dark:text-stone-100">
+                            £{product.pricingPostagePackagingGbp.toFixed(2)}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                        Projected Shopify price on receive
+                      </p>
+                      <p className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                        {projectedShopifyPrice != null ? `£${projectedShopifyPrice.toFixed(2)}` : '-'}
+                      </p>
+                    </div>
+                    <div className="mt-2">
+                      {editing ? (
+                        <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
+                          <input
+                            type="checkbox"
+                            checked={editForm.pricingGreenlight}
+                            onChange={(e) =>
+                              handleEditFieldChange('pricingGreenlight', e.target.checked)
+                            }
+                            className="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-600"
+                          />
+                          Auto-push price to Shopify when stock is received
+                        </label>
+                      ) : (
+                        <p className="text-xs text-stone-700 dark:text-stone-300">
+                          {product.pricingGreenlight
+                            ? 'Greenlit for auto Shopify price updates on receive'
+                            : 'Not greenlit'}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="pt-1 border-t border-stone-200/70 dark:border-stone-700/70">
                     <p className="text-xs text-stone-500 dark:text-stone-400 mb-2">Sources & Integrations</p>
                     <div className="flex flex-wrap gap-2">
                       {/* Internal Source (Invoices) */}
@@ -857,6 +1045,7 @@ export default function ProductHistoryPage() {
                   )}
                 </div>
               </div>
+
             </div>
           </div>
 

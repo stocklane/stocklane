@@ -20,6 +20,26 @@ interface ExecVariant {
   targetProductId: string | null;
 }
 
+function generateInternalSku(usedSkuLower: Set<string>): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let suffix = '';
+    for (let i = 0; i < 8; i++) {
+      suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+    const candidate = `SL-${suffix}`;
+    const key = candidate.toLowerCase();
+    if (!usedSkuLower.has(key)) {
+      usedSkuLower.add(key);
+      return candidate;
+    }
+  }
+
+  const fallback = `SL-${Date.now().toString(36).toUpperCase()}`;
+  usedSkuLower.add(fallback.toLowerCase());
+  return fallback;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
@@ -43,6 +63,20 @@ export async function POST(request: NextRequest) {
     const suppliers = (existingSuppliers as any[]) || [];
     const supplierCache = new Map<string, string>();
     suppliers.forEach((s: any) => supplierCache.set(s.name.toLowerCase(), s.id));
+
+    const { data: existingProducts } = await supabase
+      .from('products')
+      .select('primarysku, suppliersku')
+      .eq('user_id', user.id);
+    const usedSkuLower = new Set<string>();
+    (existingProducts || []).forEach((p: any) => {
+      if (typeof p.primarysku === 'string' && p.primarysku.trim()) {
+        usedSkuLower.add(p.primarysku.trim().toLowerCase());
+      }
+      if (typeof p.suppliersku === 'string' && p.suppliersku.trim()) {
+        usedSkuLower.add(p.suppliersku.trim().toLowerCase());
+      }
+    });
 
     const resolveSupplier = async (name: string | null): Promise<string | null> => {
       if (!name) return null;
@@ -86,11 +120,16 @@ export async function POST(request: NextRequest) {
         updated++;
       } else if (v.action === 'create') {
         const barcodes = v.barcode ? [v.barcode] : [];
+        const providedSku = typeof v.sku === 'string' ? v.sku.trim() : '';
+        const resolvedPrimarySku = providedSku || generateInternalSku(usedSkuLower);
+        if (providedSku) {
+          usedSkuLower.add(providedSku.toLowerCase());
+        }
         const { data: newDbProduct, error: insertError } = await supabase
           .from('products')
           .insert({
             name: v.title,
-            primarysku: v.sku,
+            primarysku: resolvedPrimarySku,
             barcodes,
             aliases: [],
             supplierid: await resolveSupplier(v.vendor),
@@ -145,12 +184,13 @@ export async function POST(request: NextRequest) {
       await supabase
         .from('product_integrations')
         .upsert({
+          user_id: user.id,
           product_id: productId,
           platform: 'shopify',
           external_product_id: v.shopifyProductId,
           external_variant_id: v.shopifyVariantId,
           external_inventory_item_id: v.inventoryItemId || null,
-        }, { onConflict: 'platform,external_product_id,external_variant_id' });
+        }, { onConflict: 'user_id,platform,external_product_id,external_variant_id' });
     }
 
     return NextResponse.json({

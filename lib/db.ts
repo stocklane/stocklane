@@ -1123,6 +1123,7 @@ export async function receiveStockForProduct(params: {
     const { data: integration } = await supabase
       .from('product_integrations')
       .select('*')
+      .eq('user_id', product.user_id)
       .eq('product_id', productId)
       .eq('platform', 'shopify')
       .maybeSingle();
@@ -1137,10 +1138,26 @@ export async function receiveStockForProduct(params: {
       if (product.pricing_greenlight && product.target_margin) {
         const targetMarginPct = Number(product.target_margin);
         if (targetMarginPct > 0 && targetMarginPct < 100) {
-          // Calculate new price based on WAC and Target Margin
-          // Price = Cost / (1 - Margin/100)
-          const newPrice = newAvg / (1 - (targetMarginPct / 100));
-          const formattedPrice = newPrice.toFixed(2);
+          // Margin model:
+          // requiredNet = (unitCost + fixedPerUnitCost) / (1 - targetMargin)
+          // sellingPrice = requiredNet / (1 - taxPct - feePct)
+          const taxPct = Number(product.pricing_sales_tax_pct ?? 0);
+          const feePct = Number(product.pricing_shopify_fee_pct ?? 0);
+          const fixedPerUnitCost = Number(product.pricing_postage_packaging_gbp ?? 0);
+
+          const marginRate = targetMarginPct / 100;
+          const taxRate = Math.max(0, taxPct) / 100;
+          const feeRate = Math.max(0, feePct) / 100;
+          const variableDeductions = taxRate + feeRate;
+
+          if (marginRate >= 1 || variableDeductions >= 1) {
+            throw new Error('Invalid pricing settings: rates must total below 100%');
+          }
+
+          const unitCost = Math.max(0, newAvg) + Math.max(0, fixedPerUnitCost);
+          const requiredNet = unitCost / (1 - marginRate);
+          const newPrice = requiredNet / (1 - variableDeductions);
+          const formattedPrice = Math.max(0, newPrice).toFixed(2);
           
           if (integration.external_variant_id) {
             await updateShopifyPrice(integration.external_variant_id, formattedPrice, product.user_id);
@@ -1160,6 +1177,7 @@ export async function receiveStockForProduct(params: {
       
       // Save the new link
       await supabase.from('product_integrations').insert({
+        user_id: product.user_id,
         product_id: productId,
         platform: 'shopify',
         external_product_id: newShopifyIds.productId,
