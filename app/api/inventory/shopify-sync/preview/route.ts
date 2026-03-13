@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
+import type { MatchType } from '@/lib/ai-matching';
 
 export const runtime = 'nodejs';
 
@@ -22,12 +23,76 @@ interface PreviewVariant {
   action: 'create' | 'update' | 'ignore';
 }
 
+interface ProductRow {
+  id: string;
+  name: string;
+  primarysku: string | null;
+  suppliersku: string | null;
+  barcodes: string[] | null;
+}
+
+interface MatchableProductRow {
+  id: string;
+  name: string;
+  primarysku?: string | null;
+  suppliersku?: string | null;
+  barcodes?: string[];
+}
+
+interface ShopifyVariantNode {
+  id: string;
+  title: string | null;
+  sku: string | null;
+  barcode: string | null;
+  price: string | null;
+  inventoryQuantity: number | string | null;
+  inventoryItem?: { id: string | null } | null;
+}
+
+interface ShopifyProductNode {
+  id: string;
+  title: string;
+  vendor: string | null;
+  productType: string | null;
+  variants?: {
+    edges: Array<{ node: ShopifyVariantNode }>;
+  } | null;
+}
+
+interface ShopifyProductsPage {
+  pageInfo: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+  };
+  edges: Array<{ node: ShopifyProductNode }>;
+}
+
+interface ShopifyGraphqlResponse {
+  data?: {
+    products?: ShopifyProductsPage;
+  };
+  errors?: unknown;
+}
+
+interface RawVariant {
+  pId: string;
+  vId: string;
+  title: string;
+  sku: string | null;
+  barcode: string | null;
+  qty: number;
+  price: number;
+  vendor: string | null;
+  type: string | null;
+  invId: string | null;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
 
     // SECURITY: Rate limit
-    const blocked = applyRateLimit(request, user.id, { limit: 5, windowMs: 60_000 });
+    const blocked = applyRateLimit(request, user.id, { limit: 60, windowMs: 60_000 });
     if (blocked) return blocked;
 
     // Get the user's Shopify credentials
@@ -71,11 +136,11 @@ export async function POST(request: NextRequest) {
       .from('products')
       .select('id, name, primarysku, suppliersku, barcodes')
       .eq('user_id', user.id);
-    const products = (existingProducts as any[]) || [];
+    const products: ProductRow[] = existingProducts || [];
 
-    const rawVariants: any[] = [];
+    const rawVariants: RawVariant[] = [];
     while (hasNextPage) {
-      const response: any = await fetch(`https://${domain}/admin/api/2024-01/graphql.json`, {
+      const response: ShopifyGraphqlResponse = await fetch(`https://${domain}/admin/api/2024-01/graphql.json`, {
         method: 'POST',
         headers: shopifyHeaders,
         body: JSON.stringify({ query: graphqlQuery, variables: { cursor } }),
@@ -95,11 +160,11 @@ export async function POST(request: NextRequest) {
             title: v.title && v.title !== 'Default Title' ? `${p.title} (${v.title})` : p.title,
             sku: v.sku,
             barcode: v.barcode,
-            qty: Math.max(0, parseInt(v.inventoryQuantity) || 0),
-            price: parseFloat(v.price) || 0,
+            qty: Math.max(0, parseInt(String(v.inventoryQuantity ?? '0'), 10) || 0),
+            price: parseFloat(v.price ?? '0') || 0,
             vendor: p.vendor,
             type: p.productType,
-            invId: v.inventoryItem?.id,
+            invId: v.inventoryItem?.id || null,
           });
         }
       }
@@ -116,7 +181,10 @@ export async function POST(request: NextRequest) {
         primarySku: rv.sku,
         barcodes: rv.barcode ? [rv.barcode] : [],
       })),
-      products,
+      products.map((product): MatchableProductRow => ({
+        ...product,
+        barcodes: product.barcodes || [],
+      })),
       { useAI: !!process.env.GEMINI_API_KEY, apiKey: process.env.GEMINI_API_KEY }
     );
 
@@ -138,7 +206,7 @@ export async function POST(request: NextRequest) {
         vendor: rv.vendor,
         category: rv.type,
         inventoryItemId: rv.invId,
-        matchType: (match?.matchType === 'exact_name' ? 'none' : match?.matchType) as any || 'none', // Shopify preview UI expects specific types
+        matchType: normalizePreviewMatchType(match?.matchType),
         targetProductId: target?.id || null,
         targetProductName: target?.name || null,
         action: target ? 'update' : 'create',
@@ -153,8 +221,18 @@ export async function POST(request: NextRequest) {
       }
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Shopify Sync Preview Error:', error);
-    return NextResponse.json({ error: error.message || 'Failed to generate sync preview' }, { status: 500 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to generate sync preview' },
+      { status: 500 },
+    );
   }
+}
+
+function normalizePreviewMatchType(matchType: MatchType | undefined): PreviewVariant['matchType'] {
+  if (!matchType || matchType === 'exact_name') {
+    return 'none';
+  }
+  return matchType;
 }

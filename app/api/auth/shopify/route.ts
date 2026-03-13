@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
     const nonce = crypto.randomBytes(16).toString('hex');
     const state = `${nonce}:${user.id}`;
 
-    const scopes = 'read_orders,read_products,read_inventory,write_inventory,read_locations,read_customers';
+    const scopes = 'read_orders,read_products,write_products,read_inventory,write_inventory,read_locations,read_customers';
     const redirectUri = `${getBaseUrl(request)}/api/auth/shopify/callback`;
 
     const authUrl = `https://${shopDomain}/admin/oauth/authorize?` +

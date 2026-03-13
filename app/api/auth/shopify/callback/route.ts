@@ -125,7 +125,7 @@ export async function GET(request: NextRequest) {
 
     // Redirect back to shopify sync preview page with success
     const baseUrl = getBaseUrl(request);
-    return NextResponse.redirect(`${baseUrl}/inventory/shopify-sync`);
+    return NextResponse.redirect(`${baseUrl}/inventory/shopify-sync?shopify=connected`);
   } catch (error) {
     console.error('Shopify callback error:', error);
     return redirectWithError(request, 'An unexpected error occurred');

@@ -14,6 +14,19 @@ interface ImportRow {
   supplier?: string | null;
 }
 
+interface ExistingProductRow {
+  id: string;
+  name: string;
+  primarysku: string | null;
+  suppliersku: string | null;
+  barcodes: string[] | null;
+}
+
+interface ExistingSupplierRow {
+  id: string;
+  name: string;
+}
+
 function generateInternalSku(usedSkuLower: Set<string>): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -58,9 +71,9 @@ export async function POST(request: NextRequest) {
       .select('id, name, primarysku, suppliersku, barcodes')
       .eq('user_id', user.id);
 
-    const products = (existingProducts as any[]) || [];
+    const products: ExistingProductRow[] = existingProducts || [];
     const usedSkuLower = new Set<string>();
-    products.forEach((p: any) => {
+    products.forEach((p) => {
       if (typeof p.primarysku === 'string' && p.primarysku.trim()) {
         usedSkuLower.add(p.primarysku.trim().toLowerCase());
       }
@@ -75,9 +88,9 @@ export async function POST(request: NextRequest) {
       .select('id, name')
       .eq('user_id', user.id);
 
-    const suppliers = (existingSuppliers as any[]) || [];
+    const suppliers: ExistingSupplierRow[] = existingSuppliers || [];
     const supplierCache = new Map<string, string>(); // lowercase name -> id
-    suppliers.forEach((s: any) => supplierCache.set(s.name.toLowerCase(), s.id));
+    suppliers.forEach((s) => supplierCache.set(s.name.toLowerCase(), s.id));
 
     const resolveSupplier = async (name: string | null): Promise<string | null> => {
       if (!name) return null;
@@ -141,7 +154,7 @@ export async function POST(request: NextRequest) {
       if (skusToMatch.length > 0) {
         const skuLowerSet = new Set(skusToMatch.map(s => s.toLowerCase()));
         matchedProduct = products.find(
-          (p: any) =>
+          (p) =>
             (p.primarysku && skuLowerSet.has(p.primarysku.toLowerCase())) ||
             (p.suppliersku && skuLowerSet.has(p.suppliersku.toLowerCase()))
         ) || null;
@@ -150,7 +163,7 @@ export async function POST(request: NextRequest) {
       // 2) Try Barcode matching
       if (!matchedProduct && barcodes.length > 0) {
         const barcodeLowerSet = new Set(barcodes.map((b) => b.toLowerCase()));
-        matchedProduct = products.find((p: any) => {
+        matchedProduct = products.find((p) => {
           const existingBarcodes = Array.isArray(p.barcodes) ? p.barcodes : [];
           return existingBarcodes.some((b: string) => barcodeLowerSet.has(b.toLowerCase()));
         }) || null;
@@ -159,7 +172,7 @@ export async function POST(request: NextRequest) {
       // 3) Try Name matching (Case-insensitive fallback)
       if (!matchedProduct) {
         const nameLower = rawName.toLowerCase();
-        matchedProduct = products.find((p: any) => p.name.toLowerCase() === nameLower) || null;
+        matchedProduct = products.find((p) => p.name.toLowerCase() === nameLower) || null;
       }
 
       let productId: string;
@@ -169,8 +182,12 @@ export async function POST(request: NextRequest) {
         productId = matchedProduct.id;
         updated++;
       } else {
-        const resolvedPrimarySku =
-          primarySku || supplierSku || generateInternalSku(usedSkuLower);
+        let resolvedPrimarySku = primarySku || supplierSku || generateInternalSku(usedSkuLower);
+        if (resolvedPrimarySku && usedSkuLower.has(resolvedPrimarySku.toLowerCase())) {
+          resolvedPrimarySku = generateInternalSku(usedSkuLower);
+        } else if (resolvedPrimarySku) {
+          usedSkuLower.add(resolvedPrimarySku.toLowerCase());
+        }
 
         // Create new product
         const { data: newProduct, error: insertError } = await supabase

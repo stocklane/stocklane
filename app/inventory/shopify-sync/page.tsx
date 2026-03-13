@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { authenticatedFetch } from '@/lib/api-client';
 
 interface PreviewVariant {
@@ -28,34 +28,88 @@ interface LocalProduct {
     primarysku: string | null;
 }
 
+interface PreviewResponse {
+    success?: boolean;
+    error?: string;
+    message?: string;
+    data?: {
+        variants?: PreviewVariant[];
+        localProducts?: LocalProduct[];
+    };
+}
+
 export default function ShopifySyncPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const didLoadRef = useRef(false);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [shopifyMessage, setShopifyMessage] = useState<string | null>(null);
+    const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
 
     const [variants, setVariants] = useState<PreviewVariant[]>([]);
     const [localProducts, setLocalProducts] = useState<LocalProduct[]>([]);
 
-    useEffect(() => {
-        async function load() {
-            try {
-                const res = await authenticatedFetch('/api/inventory/shopify-sync/preview', {
-                    method: 'POST'
-                });
-                const json = await res.json();
-                if (!res.ok || !json.success) throw new Error(json.error || 'Failed to connect to Shopify');
+    const loadPreview = async () => {
+        try {
+            setLoading(true);
+            setError(null);
+            setRetryAfterSeconds(null);
 
-                setVariants(json.data.variants || []);
-                setLocalProducts(json.data.localProducts || []);
-            } catch (err: any) {
-                setError(err.message);
-            } finally {
-                setLoading(false);
+            const res = await authenticatedFetch('/api/inventory/shopify-sync/preview', {
+                method: 'POST'
+            });
+            const json: PreviewResponse = await res.json();
+
+            if (res.status === 429) {
+                setError('Too many requests. Please wait a moment, then retry the Shopify sync preview.');
+                setRetryAfterSeconds(60);
+                setVariants([]);
+                setLocalProducts([]);
+                return;
             }
+
+            if (!res.ok || !json.success) {
+                throw new Error(json.error || 'Failed to connect to Shopify');
+            }
+
+            setVariants(json.data?.variants || []);
+            setLocalProducts(json.data?.localProducts || []);
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Failed to connect to Shopify');
+        } finally {
+            setLoading(false);
         }
-        load();
+    };
+
+    useEffect(() => {
+        const shopifyStatus = searchParams.get('shopify');
+        if (shopifyStatus === 'connected') {
+            setShopifyMessage('Shopify account connected. Review the import below to continue syncing.');
+        }
+    }, [searchParams]);
+
+    useEffect(() => {
+        if (didLoadRef.current) return;
+        didLoadRef.current = true;
+        loadPreview();
     }, []);
+
+    useEffect(() => {
+        if (retryAfterSeconds == null || retryAfterSeconds <= 0) {
+            return;
+        }
+
+        const timeout = window.setTimeout(() => {
+            setRetryAfterSeconds((current) => {
+                if (current == null) return null;
+                return current > 1 ? current - 1 : null;
+            });
+        }, 1000);
+
+        return () => window.clearTimeout(timeout);
+    }, [retryAfterSeconds]);
 
     const handleActionChange = (index: number, action: 'create' | 'update' | 'ignore') => {
         const newVariants = [...variants];
@@ -97,13 +151,13 @@ export default function ShopifySyncPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            const json = await res.json();
+            const json: PreviewResponse = await res.json();
             if (!res.ok || !json.success) throw new Error(json.error || 'Failed to sync execution');
 
             alert(json.message);
             router.push('/inventory');
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Failed to sync execution');
         } finally {
             setSaving(false);
         }
@@ -156,7 +210,38 @@ export default function ShopifySyncPage() {
                 </div>
                 {error && (
                     <div className="mt-4 p-3 bg-red-50 text-red-700 border border-red-200 rounded-md">
-                        {error}
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div>
+                                <p>{error}</p>
+                                {retryAfterSeconds !== null && (
+                                    <p className="mt-1 text-xs text-red-600">
+                                        Retry available in about {retryAfterSeconds}s.
+                                    </p>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={() => loadPreview()}
+                                    disabled={loading || retryAfterSeconds !== null}
+                                    className="px-3 py-1.5 rounded-md border border-red-200 bg-white text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Retry preview
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => router.push('/account')}
+                                    className="px-3 py-1.5 rounded-md border border-red-200 bg-white text-sm font-medium text-red-700 hover:bg-red-50"
+                                >
+                                    Back to account
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {shopifyMessage && !error && (
+                    <div className="mt-4 p-3 bg-green-50 text-green-700 border border-green-200 rounded-md">
+                        {shopifyMessage}
                     </div>
                 )}
             </div>

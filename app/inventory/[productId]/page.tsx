@@ -26,6 +26,7 @@ interface Product {
   category: string | null;
   tags: string[];
   imageUrl: string | null;
+  shopifyBound: boolean;
   pricingGreenlight: boolean;
   targetMargin: number | null;
   pricingSalesTaxPct: number;
@@ -33,6 +34,11 @@ interface Product {
   pricingPostagePackagingGbp: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface MutationResponse {
+  success?: boolean;
+  error?: string;
 }
 
 interface InventoryRecord {
@@ -131,6 +137,8 @@ export default function ProductHistoryPage() {
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
   const [priceError, setPriceError] = useState<string | null>(null);
   const [savingPrices, setSavingPrices] = useState(false);
+  const [receiveQuantities, setReceiveQuantities] = useState<Record<string, string>>({});
+  const [receivingTransitId, setReceivingTransitId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
     name: '',
     sku: '',
@@ -139,6 +147,7 @@ export default function ProductHistoryPage() {
     tags: '',
     aliases: '',
     imageUrl: '',
+    shopifyBound: false,
     pricingGreenlight: false,
     targetMargin: '',
     pricingSalesTaxPct: '',
@@ -154,13 +163,15 @@ export default function ProductHistoryPage() {
         if (!productId) return;
         setLoading(true);
         setError(null);
-
-        const res = await authenticatedFetch(`/api/inventory/product?id=${encodeURIComponent(productId)}`);
+        const res = await authenticatedFetch(
+          `/api/inventory/product?id=${encodeURIComponent(productId)}`,
+        );
         const json = await res.json();
         if (!res.ok || !json.success) {
           throw new Error(json.error || 'Failed to load product history');
         }
-        setData(json.data);
+        const nextData = json.data as ProductHistoryResponse;
+        setData(nextData);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load product history');
       } finally {
@@ -181,6 +192,7 @@ export default function ProductHistoryPage() {
         tags: (data.product.tags || []).join(', '),
         aliases: (data.product.aliases || []).join(', '),
         imageUrl: data.product.imageUrl || '',
+        shopifyBound: !!data.product.shopifyBound,
         pricingGreenlight: !!data.product.pricingGreenlight,
         targetMargin:
           data.product.targetMargin == null ? '' : String(data.product.targetMargin),
@@ -204,6 +216,19 @@ export default function ProductHistoryPage() {
       setPriceEdits(initialPrices);
     } else {
       setPriceEdits({});
+    }
+
+    if (data?.transit) {
+      const initialReceiveQuantities: Record<string, string> = {};
+      data.transit.forEach((row) => {
+        const remaining = row.transit.remainingQuantity ?? 0;
+        if (remaining > 0) {
+          initialReceiveQuantities[row.transit.id] = String(remaining);
+        }
+      });
+      setReceiveQuantities(initialReceiveQuantities);
+    } else {
+      setReceiveQuantities({});
     }
   }, [data]);
 
@@ -240,6 +265,31 @@ export default function ProductHistoryPage() {
     }));
   };
 
+  const handleReceiveQuantityChange = (transitId: string, value: string) => {
+    setReceiveQuantities((prev) => ({
+      ...prev,
+      [transitId]: value,
+    }));
+  };
+
+  const reloadProductData = async () => {
+    if (!productId) {
+      return null;
+    }
+
+    const res = await authenticatedFetch(
+      `/api/inventory/product?id=${encodeURIComponent(productId)}`,
+    );
+    const json = await res.json();
+    if (!res.ok || !json.success) {
+      throw new Error(json.error || 'Failed to reload product history');
+    }
+
+    const nextData = json.data as ProductHistoryResponse;
+    setData(nextData);
+    return nextData;
+  };
+
   const handleSaveProduct = async () => {
     if (!data) return;
 
@@ -264,6 +314,7 @@ export default function ProductHistoryPage() {
         tags: normalizeList(editForm.tags),
         aliases: normalizeList(editForm.aliases),
         imageUrl: editForm.imageUrl.trim() || null,
+        shopifyBound: editForm.shopifyBound,
         pricingGreenlight: editForm.pricingGreenlight,
         targetMargin:
           editForm.targetMargin.trim() === '' ? null : Number(editForm.targetMargin),
@@ -349,25 +400,16 @@ export default function ProductHistoryPage() {
             }),
           },
         );
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok || (json && (json as any).success === false)) {
+        const json: MutationResponse = await res.json().catch(() => ({}));
+        if (!res.ok || json.success === false) {
           throw new Error(
-            ((json as any) && (json as any).error) || 'Failed to update line item',
+            json.error || 'Failed to update line item',
           );
         }
       }
 
       if (updates.length > 0) {
-        const res = await authenticatedFetch(
-          `/api/inventory/product?id=${encodeURIComponent(productId)}`,
-        );
-        const json = await res.json();
-        if (!res.ok || !json.success) {
-          throw new Error(
-            json.error || 'Failed to reload product after saving prices',
-          );
-        }
-        setData(json.data);
+        await reloadProductData();
       }
 
       setEditingPrices(false);
@@ -488,6 +530,70 @@ export default function ProductHistoryPage() {
     }
   };
 
+  const handleReceiveTransit = async (row: TransitWithContext) => {
+    const remainingQuantity = row.transit.remainingQuantity || 0;
+    if (remainingQuantity <= 0) {
+      return;
+    }
+
+    const rawQuantity = receiveQuantities[row.transit.id] ?? String(remainingQuantity);
+    const quantityToReceive = Number(rawQuantity);
+
+    if (!Number.isFinite(quantityToReceive) || quantityToReceive <= 0) {
+      alert('Please enter a valid quantity to receive.');
+      return;
+    }
+
+    if (quantityToReceive > remainingQuantity) {
+      alert(`You can receive at most ${remainingQuantity} units for this shipment.`);
+      return;
+    }
+
+    const description = row.poLine?.description || data?.product.name || 'this item';
+    if (
+      !window.confirm(
+        `Mark ${quantityToReceive} unit(s) as received for "${description}"? (In transit: ${remainingQuantity})`,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setReceivingTransitId(row.transit.id);
+      setError(null);
+
+      const endpoint = row.poLine
+        ? '/api/inventory/receive-line'
+        : '/api/inventory/receive';
+      const payload = row.poLine
+        ? {
+            productId: row.transit.productId,
+            poLineId: row.poLine.id,
+            quantity: quantityToReceive,
+          }
+        : {
+            productId: row.transit.productId,
+            quantity: quantityToReceive,
+          };
+
+      const res = await authenticatedFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json: MutationResponse = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) {
+        throw new Error(json.error || 'Failed to receive stock');
+      }
+
+      await reloadProductData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to receive stock');
+    } finally {
+      setReceivingTransitId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#f9f9f8] dark:bg-stone-900 py-4 sm:py-6 px-3 sm:px-6 lg:px-8">
@@ -528,12 +634,6 @@ export default function ProductHistoryPage() {
   }
 
   const { product, inventory, supplier, transit } = data;
-
-  const totalOrdered = transit.reduce((sum, t) => sum + (t.transit.quantity || 0), 0);
-  const totalReceived = transit.reduce(
-    (sum, t) => sum + (t.transit.quantity - (t.transit.remainingQuantity || 0)),
-    0
-  );
 
   const initials = product.name
     .split(' ')
@@ -667,6 +767,7 @@ export default function ProductHistoryPage() {
                           tags: (data.product.tags || []).join(', '),
                           aliases: (data.product.aliases || []).join(', '),
                           imageUrl: data.product.imageUrl || '',
+                          shopifyBound: !!data.product.shopifyBound,
                           pricingGreenlight: !!data.product.pricingGreenlight,
                           targetMargin:
                             data.product.targetMargin == null
@@ -935,6 +1036,27 @@ export default function ProductHistoryPage() {
                     </div>
                     <div className="mt-2">
                       {editing ? (
+                        <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300 mb-2">
+                          <input
+                            type="checkbox"
+                            checked={editForm.shopifyBound}
+                            onChange={(e) =>
+                              handleEditFieldChange('shopifyBound', e.target.checked)
+                            }
+                            className="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-600"
+                          />
+                          Create Shopify draft on receive when no link exists
+                        </label>
+                      ) : (
+                        <p className="text-xs text-stone-700 dark:text-stone-300 mb-2">
+                          {product.shopifyBound
+                            ? 'Shopify-bound: draft can be created on receive when unlinked'
+                            : 'Not marked for Shopify draft creation'}
+                        </p>
+                      )}
+                    </div>
+                    <div className="mt-2">
+                      {editing ? (
                         <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
                           <input
                             type="checkbox"
@@ -1130,6 +1252,7 @@ export default function ProductHistoryPage() {
                       <th className="px-2 sm:px-3 py-2 text-right font-medium text-stone-500 dark:text-stone-400 whitespace-nowrap">Unit £</th>
                       <th className="px-2 sm:px-3 py-2 text-right font-medium text-stone-500 dark:text-stone-400 hidden sm:table-cell">Total</th>
                       <th className="px-2 sm:px-3 py-2 text-left font-medium text-stone-500 dark:text-stone-400">Status</th>
+                      <th className="px-2 sm:px-3 py-2 text-right font-medium text-stone-500 dark:text-stone-400 whitespace-nowrap">Receive</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-200 dark:divide-stone-700">
@@ -1162,6 +1285,10 @@ export default function ProductHistoryPage() {
 
                       const isLongDescription =
                         (row.poLine?.description || '').length > 60;
+                      const canReceive = remaining > 0;
+                      const receiveValue =
+                        receiveQuantities[row.transit.id] ?? String(remaining);
+                      const receivingThisRow = receivingTransitId === row.transit.id;
 
                       return (
                         <tr key={row.transit.id} className="hover:bg-[#f9f9f8] dark:hover:bg-stone-700/50">
@@ -1268,6 +1395,38 @@ export default function ProductHistoryPage() {
                             >
                               {row.transit.status.replace('_', ' ')}
                             </span>
+                          </td>
+                          <td className="px-2 sm:px-3 py-2 align-top">
+                            {canReceive ? (
+                              <div className="flex items-center justify-end gap-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={remaining}
+                                  step="1"
+                                  value={receiveValue}
+                                  onChange={(e) =>
+                                    handleReceiveQuantityChange(
+                                      row.transit.id,
+                                      e.target.value,
+                                    )
+                                  }
+                                  className="w-16 rounded-md border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 px-2 py-1 text-right text-xs text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleReceiveTransit(row)}
+                                  disabled={receivingThisRow}
+                                  className="inline-flex items-center px-2.5 py-1.5 rounded-md bg-amber-600 text-white text-[11px] font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {receivingThisRow ? 'Receiving…' : 'Receive'}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="block text-right text-[10px] text-stone-400 dark:text-stone-500">
+                                Complete
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );

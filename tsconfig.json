@@ -30,5 +30,11 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "eterna-cards", "inventory-managment"]
+  "exclude": [
+    "node_modules",
+    "eterna-cards",
+    "inventory-managment",
+    ".claude",
+    "scripts"
+  ]
 }

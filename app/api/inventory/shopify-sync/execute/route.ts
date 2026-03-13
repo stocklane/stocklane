@@ -20,6 +20,16 @@ interface ExecVariant {
   targetProductId: string | null;
 }
 
+interface SupplierRow {
+  id: string;
+  name: string;
+}
+
+interface ProductSkuRow {
+  primarysku: string | null;
+  suppliersku: string | null;
+}
+
 function generateInternalSku(usedSkuLower: Set<string>): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -60,16 +70,17 @@ export async function POST(request: NextRequest) {
       .from('suppliers')
       .select('id, name')
       .eq('user_id', user.id);
-    const suppliers = (existingSuppliers as any[]) || [];
+    const suppliers: SupplierRow[] = existingSuppliers || [];
     const supplierCache = new Map<string, string>();
-    suppliers.forEach((s: any) => supplierCache.set(s.name.toLowerCase(), s.id));
+    suppliers.forEach((s) => supplierCache.set(s.name.toLowerCase(), s.id));
 
     const { data: existingProducts } = await supabase
       .from('products')
       .select('primarysku, suppliersku')
       .eq('user_id', user.id);
     const usedSkuLower = new Set<string>();
-    (existingProducts || []).forEach((p: any) => {
+    const productSkus: ProductSkuRow[] = existingProducts || [];
+    productSkus.forEach((p) => {
       if (typeof p.primarysku === 'string' && p.primarysku.trim()) {
         usedSkuLower.add(p.primarysku.trim().toLowerCase());
       }
@@ -121,10 +132,13 @@ export async function POST(request: NextRequest) {
       } else if (v.action === 'create') {
         const barcodes = v.barcode ? [v.barcode] : [];
         const providedSku = typeof v.sku === 'string' ? v.sku.trim() : '';
-        const resolvedPrimarySku = providedSku || generateInternalSku(usedSkuLower);
-        if (providedSku) {
-          usedSkuLower.add(providedSku.toLowerCase());
+        if (providedSku && usedSkuLower.has(providedSku.toLowerCase())) {
+          errors.push(`Cannot create "${v.title}" because SKU "${providedSku}" already exists in this account.`);
+          failed++;
+          continue;
         }
+        const resolvedPrimarySku = providedSku || generateInternalSku(usedSkuLower);
+        usedSkuLower.add(resolvedPrimarySku.toLowerCase());
         const { data: newDbProduct, error: insertError } = await supabase
           .from('products')
           .insert({
@@ -199,8 +213,9 @@ export async function POST(request: NextRequest) {
       data: { total: created + updated, created, updated, ignored, failed, errors }
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Shopify Sync Execute Error:', error);
-    return NextResponse.json({ error: error.message || 'Failed to execute Shopify sync' }, { status: 500 });
+    const message = error instanceof Error ? error.message : 'Failed to execute Shopify sync';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

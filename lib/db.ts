@@ -50,6 +50,99 @@ export interface Totals {
   grandTotal: number | null;
 }
 
+interface PurchaseOrderUpdateRow {
+  supplierid?: string | null;
+  invoicenumber?: string | null;
+  invoicedate?: string | null;
+  currency?: string;
+  paymentterms?: string | null;
+  imageurl?: string | null;
+  imageurls?: string[] | null;
+  notes?: string | null;
+  subtotalexvat?: number | null;
+  extras?: number | null;
+  vat?: number | null;
+  totalamount?: number | null;
+  tracking_number?: string | null;
+  tracking_postcode?: string | null;
+  courier?: string | null;
+  tracking_status?: string | null;
+}
+
+interface POLineRow {
+  id: string;
+  purchaseorderid: string;
+  description: string;
+  suppliersku: string | null;
+  quantity: number | string | null;
+  unitcostexvat: number | string | null;
+  linetotalexvat: number | string | null;
+  rrp?: number | string | null;
+}
+
+interface POLineUpdateRow {
+  description?: string;
+  suppliersku?: string | null;
+  quantity?: number;
+  unitcostexvat?: number;
+  linetotalexvat?: number;
+  rrp?: number | null;
+}
+
+interface ExistingPurchaseOrderIdRow {
+  id: string;
+}
+
+interface ProductDbRow {
+  id: string;
+  name: string;
+  primarysku?: string | null;
+  suppliersku?: string | null;
+  barcodes?: string[] | null;
+  aliases?: string[] | null;
+  supplierid?: string | null;
+  category?: string | null;
+  tags?: string[] | null;
+  imageurl?: string | null;
+  shopify_bound?: boolean | null;
+  pricing_greenlight?: boolean | null;
+  target_margin?: number | string | null;
+  pricing_sales_tax_pct?: number | string | null;
+  pricing_shopify_fee_pct?: number | string | null;
+  pricing_postage_packaging_gbp?: number | string | null;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface InventoryDbRow {
+  id: string;
+  productid: string;
+  quantityonhand: number | string | null;
+  averagecostgbp: number | string | null;
+  lastupdated?: string;
+}
+
+interface TransitDbRow {
+  id: string;
+  productid: string;
+  purchaseorderid: string;
+  polineid: string;
+  supplierid: string;
+  quantity: number | string | null;
+  remainingquantity: number | string | null;
+  unitcostgbp: number | string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BarcodeProductRow {
+  id: string;
+  name: string;
+  barcodes: string[] | null;
+}
+
 
 // Helper function to find or create a supplier
 export async function findOrCreateSupplier(
@@ -133,7 +226,7 @@ export async function updatePurchaseOrder(
   poId: string,
   updates: Partial<Omit<PurchaseOrder, 'id' | 'createdAt'>>
 ): Promise<PurchaseOrder | null> {
-  const mappedUpdates: any = {};
+  const mappedUpdates: PurchaseOrderUpdateRow = {};
   if (updates.supplierId !== undefined) mappedUpdates.supplierid = updates.supplierId;
   if (updates.invoiceNumber !== undefined) mappedUpdates.invoicenumber = updates.invoiceNumber;
   if (updates.invoiceDate !== undefined) mappedUpdates.invoicedate = updates.invoiceDate;
@@ -188,7 +281,7 @@ export async function createPOLines(
     throw new Error(`Failed to create PO lines: ${error?.message}`);
   }
 
-  return data.map((row: any) => ({
+  return data.map((row: POLineRow) => ({
     id: row.id,
     purchaseOrderId: row.purchaseorderid,
     description: row.description,
@@ -205,7 +298,7 @@ export async function updatePOLine(
   lineId: string,
   updates: Partial<Omit<POLine, 'id' | 'purchaseOrderId'>>
 ): Promise<POLine | null> {
-  const mappedUpdates: any = {};
+  const mappedUpdates: POLineUpdateRow = {};
   if (updates.description !== undefined) mappedUpdates.description = updates.description;
   if (updates.supplierSku !== undefined) mappedUpdates.suppliersku = updates.supplierSku;
   if (updates.quantity !== undefined) mappedUpdates.quantity = updates.quantity;
@@ -276,14 +369,18 @@ export async function deleteSupplier(supplierId: string): Promise<{
 
   // Note: With cascade deletes, we don't need to manually delete POs and lines
   // Count deleted lines by querying poLines before deletion
-  const { count: deletedLines } = await supabase
-    .from('polines')
-    .select('*', { count: 'exact', head: true })
-    .in('purchaseorderid', (await supabase
-      .from('purchaseorders')
-      .select('id')
-      .eq('supplierid', supplierId)
-      .then(({ data }: any) => (data as any[])?.map((po: any) => po.id) || [])));
+  const { data: purchaseOrderIds } = await supabase
+    .from('purchaseorders')
+    .select('id')
+    .eq('supplierid', supplierId);
+
+  const poIds = (purchaseOrderIds || []).map((po: ExistingPurchaseOrderIdRow) => po.id);
+  const { count: deletedLines } = poIds.length > 0
+    ? await supabase
+        .from('polines')
+        .select('*', { count: 'exact', head: true })
+        .in('purchaseorderid', poIds)
+    : { count: 0 };
 
   return {
     success: true,
@@ -342,6 +439,25 @@ export interface Product {
   integrations?: ProductIntegration[];
   createdAt: string;
   updatedAt: string;
+}
+
+function mapProductRowToProduct(row: ProductDbRow | null): Product | null {
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    name: row.name,
+    primarySku: row.primarysku ?? null,
+    supplierSku: row.suppliersku ?? null,
+    barcodes: row.barcodes ?? [],
+    aliases: row.aliases ?? [],
+    supplierId: row.supplierid ?? null,
+    category: row.category ?? null,
+    tags: row.tags ?? [],
+    imageUrl: row.imageurl ?? null,
+    createdAt: row.created_at ?? '',
+    updatedAt: row.updated_at ?? '',
+  };
 }
 
 export interface InventoryRecord {
@@ -446,7 +562,7 @@ export interface ActivityLog {
   user_id: string;
   type: string;
   message: string;
-  metadata: any;
+  metadata: Record<string, unknown>;
   is_read: boolean;
   created_at: string;
 }
@@ -462,7 +578,7 @@ export async function logActivity(params: {
   userId: string;
   type: string;
   message: string;
-  metadata?: any;
+  metadata?: Record<string, unknown>;
 }): Promise<void> {
   const { error } = await supabase
     .from('activity_log')
@@ -568,12 +684,12 @@ export async function findDuplicatePurchaseOrders(
       // Check for matching line items
       let matchingLines = 0;
       for (const newLine of poLines) {
-        const similarLine = (existingLines as any[]).find(
-          (existingLine: any) =>
+        const similarLine = (existingLines as POLineRow[]).find(
+          (existingLine) =>
             existingLine.description.toLowerCase().includes(newLine.description.toLowerCase().substring(0, 20)) ||
             newLine.description.toLowerCase().includes(existingLine.description.toLowerCase().substring(0, 20)) ||
-            (Math.abs(existingLine.unitCostExVAT - newLine.unitCostExVAT) < 0.01 &&
-             existingLine.quantity === newLine.quantity)
+            (Math.abs(Number(existingLine.unitcostexvat ?? 0) - newLine.unitCostExVAT) < 0.01 &&
+             Number(existingLine.quantity ?? 0) === newLine.quantity)
         );
         if (similarLine) {
           matchingLines++;
@@ -628,12 +744,44 @@ function computeTokenSimilarity(aTokens: string[], bTokens: string[]): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+function generateInternalSku(usedSkuLower: Set<string>): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let suffix = '';
+    for (let i = 0; i < 8; i++) {
+      suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+
+    const candidate = `SL-${suffix}`;
+    const key = candidate.toLowerCase();
+    if (!usedSkuLower.has(key)) {
+      usedSkuLower.add(key);
+      return candidate;
+    }
+  }
+
+  const fallback = `SL-${Date.now().toString(36).toUpperCase()}`;
+  usedSkuLower.add(fallback.toLowerCase());
+  return fallback;
+}
+
+export interface POLineReviewDecision {
+  action: 'link' | 'create';
+  targetProductId?: string | null;
+  shopifyBound?: boolean;
+}
+
 // Sync purchase order lines into products + transit records
 export async function syncInventoryFromPurchaseOrder(params: {
   supplierId: string;
   purchaseOrderId: string;
   poLines: POLine[];
   user_id: string;
+  lineReviewDecisions?: Array<{
+    poLineId: string;
+    decision: POLineReviewDecision;
+  }>;
 }): Promise<{
   productsCreated: number;
   productsMatched: number;
@@ -643,13 +791,26 @@ export async function syncInventoryFromPurchaseOrder(params: {
   let productsMatched = 0;
   let transitCreated = 0;
 
-  const { data: products } = await supabase
+  const { data: rawProducts } = await supabase
     .from('products')
     .select('*')
     .eq('user_id', params.user_id);
 
-  if (!products) {
+  if (!rawProducts) {
     throw new Error('Failed to fetch products');
+  }
+
+  const products: ProductDbRow[] = rawProducts;
+
+  const lineDecisions = new Map(
+    (params.lineReviewDecisions || []).map((item) => [item.poLineId, item.decision]),
+  );
+  const usedSkuLower = new Set<string>();
+  for (const product of products) {
+    const primarySku = typeof product.primarysku === 'string' ? product.primarysku.trim() : '';
+    if (primarySku) {
+      usedSkuLower.add(primarySku.toLowerCase());
+    }
   }
 
   for (const line of params.poLines) {
@@ -659,30 +820,43 @@ export async function syncInventoryFromPurchaseOrder(params: {
     }
 
     const supplierSku = line.supplierSku?.trim() || null;
+    const reviewDecision = lineDecisions.get(line.id) || null;
 
     // 1. Try exact SKU/barcode match first
     let matchedProduct: Product | null = null;
-    if (supplierSku) {
+    if (reviewDecision?.action === 'link' && reviewDecision.targetProductId) {
+      matchedProduct =
+        mapProductRowToProduct(products.find((product) => product.id === reviewDecision.targetProductId) || null);
+      if (!matchedProduct) {
+        console.error(
+          `Failed to find reviewed product ${reviewDecision.targetProductId} for PO line ${line.id}`,
+        );
+        continue;
+      }
+    } else if (supplierSku) {
       const skuLower = supplierSku.toLowerCase();
-      matchedProduct = (products as any[]).find(p => {
-        // Handle both camelCase from interface and snake_case from DB
-        const pSku = (p.primarysku || p.primarySku || '').toLowerCase();
-        const sSku = (p.suppliersku || p.supplierSku || '').toLowerCase();
-        const barcodes = p.barcodes || [];
-        return pSku === skuLower || sSku === skuLower || barcodes.some((b: string) => b.toLowerCase() === skuLower);
-      }) || null;
+      matchedProduct =
+        mapProductRowToProduct(
+          products.find((p) => {
+            const pSku = (p.primarysku || '').toLowerCase();
+            const sSku = (p.suppliersku || '').toLowerCase();
+            const barcodes = p.barcodes || [];
+            return pSku === skuLower || sSku === skuLower || barcodes.some((b) => b.toLowerCase() === skuLower);
+          }) || null,
+        );
     }
 
     // 2. Fuzzy match on description if no SKU match
-    if (!matchedProduct) {
+    if (!matchedProduct && !reviewDecision) {
       const lineTokens = normalizeTextForMatch(rawDescription);
       let bestScore = 0;
       for (const candidate of products) {
         const nameTokens = normalizeTextForMatch(candidate.name || '');
         let score = computeTokenSimilarity(lineTokens, nameTokens);
 
-        if ((candidate.aliases || []).length > 0) {
-          for (const alias of candidate.aliases) {
+        const candidateAliases = candidate.aliases || [];
+        if (candidateAliases.length > 0) {
+          for (const alias of candidateAliases) {
             const aliasTokens = normalizeTextForMatch(alias);
             const aliasScore = computeTokenSimilarity(lineTokens, aliasTokens);
             if (aliasScore > score) {
@@ -693,8 +867,8 @@ export async function syncInventoryFromPurchaseOrder(params: {
 
         if (score > bestScore) {
           // STRICT RULE: If both have SKUs and they are different, NEVER match fuzzy
-          const candPSku = (candidate.primarysku || (candidate as any).primarySku || '').toLowerCase();
-          const candSSku = (candidate.suppliersku || (candidate as any).supplierSku || '').toLowerCase();
+          const candPSku = (candidate.primarysku || '').toLowerCase();
+          const candSSku = (candidate.suppliersku || '').toLowerCase();
           
           const skuLower = (supplierSku || '').toLowerCase();
           const hasDifferentSku = skuLower && (candPSku || candSSku) && 
@@ -702,7 +876,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
 
           if (!hasDifferentSku) {
             bestScore = score;
-            matchedProduct = candidate;
+            matchedProduct = mapProductRowToProduct(candidate);
           }
         }
       }
@@ -716,7 +890,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
     const now = new Date().toISOString();
     let product: Product;
 
-    if (matchedProduct) {
+    if (matchedProduct && reviewDecision?.action !== 'create') {
       productsMatched++;
       // Update aliases/supplier linkage if needed
       const updatedAliases = matchedProduct.aliases || [];
@@ -736,12 +910,19 @@ export async function syncInventoryFromPurchaseOrder(params: {
       }
       product = matchedProduct;
     } else {
+      let resolvedPrimarySku = supplierSku;
+      if (!resolvedPrimarySku || usedSkuLower.has(resolvedPrimarySku.toLowerCase())) {
+        resolvedPrimarySku = generateInternalSku(usedSkuLower);
+      } else {
+        usedSkuLower.add(resolvedPrimarySku.toLowerCase());
+      }
+
       // Create new product
       const { data: newProduct, error: insertError } = await supabase
         .from('products')
         .insert({
           name: rawDescription,
-          primarysku: supplierSku,
+          primarysku: resolvedPrimarySku,
           suppliersku: supplierSku,
           barcodes: [],
           aliases: [rawDescription],
@@ -749,6 +930,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
           category: null,
           tags: [],
           imageurl: null,
+          shopify_bound: !!reviewDecision?.shopifyBound,
           user_id: params.user_id,
         })
         .select()
@@ -758,17 +940,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
         console.error('Failed to create product:', insertError?.message || 'Unknown error');
         continue;
       }
-      products.push({
-        ...newProduct,
-        id: newProduct.id,
-        name: newProduct.name,
-        primarySku: newProduct.primarysku,
-        supplierSku: newProduct.suppliersku,
-        barcodes: newProduct.barcodes || [],
-        aliases: newProduct.aliases || [],
-        supplierId: newProduct.supplierid,
-        user_id: newProduct.user_id,
-      } as any);
+      products.push(newProduct as ProductDbRow);
       productsCreated++;
       product = newProduct;
     }
@@ -838,32 +1010,21 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
     supabase.from('polines').select('id, unitcostexvat, purchaseorderid'),
   ]);
 
-  const rawProducts = productsRes.data || [];
-  const rawInventory = inventoryRes.data || [];
-  const rawTransit = transitRes.data || [];
-  const rawPoLines = poLinesRes.data || [];
+  const rawProducts: ProductDbRow[] = productsRes.data || [];
+  const rawInventory: InventoryDbRow[] = inventoryRes.data || [];
+  const rawTransit: TransitDbRow[] = transitRes.data || [];
+  const rawPoLines: POLineRow[] = poLinesRes.data || [];
 
-  const poLinesById = new Map<string, any>(
-    rawPoLines.map((l: any) => [l.id as string, l]),
+  const poLinesById = new Map<string, POLineRow>(
+    rawPoLines.map((l) => [l.id, l]),
   );
 
-  const typedProducts: Product[] = rawProducts.map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    primarySku: p.primarysku ?? null,
-    supplierSku: p.suppliersku ?? null,
-    barcodes: p.barcodes ?? [],
-    aliases: p.aliases ?? [],
-    supplierId: p.supplierid ?? null,
-    category: p.category ?? null,
-    tags: p.tags ?? [],
-    imageUrl: p.imageurl ?? null,
-    createdAt: p.created_at,
-    updatedAt: p.updated_at,
-  }));
+  const typedProducts: Product[] = rawProducts
+    .map((p) => mapProductRowToProduct(p))
+    .filter((product): product is Product => product !== null);
 
   const items: InventoryItemView[] = typedProducts.map((product) => {
-    const invRow = rawInventory.find((i: any) => i.productid === product.id) || null;
+    const invRow = rawInventory.find((i) => i.productid === product.id) || null;
 
     let inventory: InventoryRecord | null = invRow
       ? {
@@ -871,22 +1032,22 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
           productId: invRow.productid,
           quantityOnHand: Number(invRow.quantityonhand ?? 0),
           averageCostGBP: Number(invRow.averagecostgbp ?? 0),
-          lastUpdated: invRow.lastupdated,
+          lastUpdated: invRow.lastupdated || product.updatedAt,
         }
       : null;
 
-    const productTransit = rawTransit.filter((t: any) => t.productid === product.id);
+    const productTransit = rawTransit.filter((t) => t.productid === product.id);
     const remainingTransit = productTransit.filter(
-      (t: any) => Number(t.remainingquantity ?? 0) > 0,
+      (t) => Number(t.remainingquantity ?? 0) > 0,
     );
 
     const quantityInTransit = remainingTransit.reduce(
-      (sum: number, t: any) => sum + Number(t.remainingquantity ?? 0),
+      (sum, t) => sum + Number(t.remainingquantity ?? 0),
       0,
     );
 
     // Prefer editable PO line pricing over transit.unitcostgbp, which can become stale.
-    const resolveUnitCost = (transitRow: any, poLine: any): number => {
+    const resolveUnitCost = (transitRow: TransitDbRow, poLine: POLineRow | null): number => {
       const poLineUnit = Number(poLine?.unitcostexvat);
       if (Number.isFinite(poLineUnit) && poLineUnit >= 0) {
         return poLineUnit;
@@ -1006,7 +1167,7 @@ export async function receiveStockForProduct(params: {
   const now = new Date().toISOString();
 
   // Get or create inventory record (raw DB row)
-  let inventoryRecord: any = null;
+  let inventoryRecord: InventoryDbRow | null = null;
   const { data: existingInventory } = await supabase
     .from('inventory')
     .select('*')
@@ -1164,7 +1325,7 @@ export async function receiveStockForProduct(params: {
           }
         }
       }
-    } else {
+    } else if (product.shopify_bound) {
       // 3. Draft Push: Product doesn't exist on Shopify, so create it
       // Ensure SKU exists
       let sku = product.primarysku;
@@ -1232,7 +1393,7 @@ export async function addBarcodeToProduct(
   }
 
   if (existingWithBarcode && existingWithBarcode.length > 0) {
-    const conflicting = existingWithBarcode.find((p: any) => p.id !== productId);
+    const conflicting = (existingWithBarcode as BarcodeProductRow[]).find((p) => p.id !== productId);
     if (conflicting) {
       const otherName = conflicting.name || conflicting.id;
       throw new Error(`This barcode is already linked to another product: "${otherName}"`);
