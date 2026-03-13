@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { findOrCreateSupplier, createPurchaseOrder, createPOLines, syncInventoryFromPurchaseOrder, createOrUpdateInvoiceForPurchaseOrder } from '@/lib/db';
+import {
+  findOrCreateSupplier,
+  createPurchaseOrder,
+  createPOLines,
+  syncInventoryFromPurchaseOrder,
+  createOrUpdateInvoiceForPurchaseOrder,
+} from '@/lib/db';
 import { uploadInvoiceImages } from '@/lib/storage';
 import { requireAuth } from '@/lib/auth-helpers';
 import { clearCache } from '@/lib/cache';
@@ -29,6 +35,11 @@ interface SavePORequest {
     unitCostExVAT: number;
     lineTotalExVAT: number;
     rrp?: number;
+    reviewDecision?: {
+      action: 'link' | 'create';
+      targetProductId?: string | null;
+      shopifyBound?: boolean;
+    };
   }>;
   totals?: {
     subtotal?: number;
@@ -77,7 +88,7 @@ function normalizeLineMath(lines: SavePORequest['poLines']): SavePORequest['poLi
 // POST endpoint to save approved purchase order data
 export async function POST(request: NextRequest) {
   try {
-    const { user } = await requireAuth(request);
+    const { user, supabase } = await requireAuth(request);
     // SECURITY: Rate limit – save is a write operation
     const blocked = applyRateLimit(request, user.id, { limit: 30, windowMs: 60_000 });
     if (blocked) return blocked;
@@ -117,6 +128,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const hasReviewDecisions = data.poLines.some((line) => !!line.reviewDecision);
+    if (hasReviewDecisions) {
+      const invalidDecisionIndex = data.poLines.findIndex((line) => {
+        if (!line.reviewDecision) return true;
+        if (line.reviewDecision.action === 'link') {
+          return !line.reviewDecision.targetProductId;
+        }
+        return line.reviewDecision.action !== 'create';
+      });
+
+      if (invalidDecisionIndex !== -1) {
+        return NextResponse.json(
+          { error: `Line ${invalidDecisionIndex + 1} must be reviewed before saving` },
+          { status: 400 },
+        );
+      }
+    }
+
     data.poLines = normalizeLineMath(data.poLines);
 
     // Save to database
@@ -130,6 +159,31 @@ export async function POST(request: NextRequest) {
         vatNumber: data.supplier.vatNumber || null,
         user_id: user.id,
       });
+
+      const linkedTargetIds = Array.from(
+        new Set(
+          data.poLines
+            .map((line) => line.reviewDecision?.targetProductId || null)
+            .filter((value): value is string => !!value),
+        ),
+      );
+
+      if (hasReviewDecisions && linkedTargetIds.length > 0) {
+        const { data: linkedProducts } = await supabase
+          .from('products')
+          .select('id')
+          .eq('user_id', user.id)
+          .in('id', linkedTargetIds);
+
+        const validTargetIds = new Set((linkedProducts || []).map((product: { id: string }) => product.id));
+        const invalidTargetId = linkedTargetIds.find((id) => !validTargetIds.has(id));
+        if (invalidTargetId) {
+          return NextResponse.json(
+            { error: 'One or more reviewed product links are invalid for this account' },
+            { status: 400 },
+          );
+        }
+      }
 
       // Create purchase order first (we need the ID for image upload)
       const purchaseOrderId = await createPurchaseOrder({
@@ -197,6 +251,16 @@ export async function POST(request: NextRequest) {
         purchaseOrderId,
         poLines,
         user_id: user.id,
+        lineReviewDecisions: hasReviewDecisions
+          ? poLines.map((line, index) => ({
+              poLineId: line.id,
+              decision: {
+                action: data.poLines[index].reviewDecision!.action,
+                targetProductId: data.poLines[index].reviewDecision!.targetProductId || null,
+                shopifyBound: !!data.poLines[index].reviewDecision!.shopifyBound,
+              },
+            }))
+          : undefined,
       });
 
       // Invalidate caches so the new PO appears immediately

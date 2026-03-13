@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
+import { suggestInvoiceLineMatches, type MatchableProduct } from '@/lib/invoice-line-matching';
 
 // Force Node.js runtime for pdf-parse
 export const runtime = 'nodejs';
@@ -317,10 +318,11 @@ function convertToGBP(extractedData: ExtractedData, exchangeRates: { [key: strin
 // POST endpoint to extract data from invoice (without saving)
 export async function POST(request: NextRequest) {
   try {
-    const { user } = await requireAuth(request);
+    const { user, supabase } = await requireAuth(request);
 
-    // SECURITY: Rate limit – AI extraction is expensive, allow 10 requests/min
-    const blocked = applyRateLimit(request, user.id, { limit: 10, windowMs: 60_000 });
+    // SECURITY: Rate limit – AI extraction is expensive, but repeated review retries
+    // are part of normal use during PO import, so keep enough headroom for that flow.
+    const blocked = applyRateLimit(request, user.id, { limit: 30, windowMs: 60_000 });
     if (blocked) return blocked;
 
     // 1. Get API key
@@ -495,9 +497,33 @@ export async function POST(request: NextRequest) {
 
     // 8. Return extracted data WITHOUT saving to database
     // Note: We allow incomplete data - user can fill in missing fields in the UI
+    const { data: products } = await supabase
+      .from('products')
+      .select('id, name, primarysku, suppliersku, barcodes, aliases')
+      .eq('user_id', user.id);
+
+    const typedProducts = (products || []) as MatchableProduct[];
+
+    const productOptions = typedProducts.map((product) => ({
+      id: product.id as string,
+      name: product.name as string,
+      primarySku: product.primarysku ?? null,
+      supplierSku: product.suppliersku ?? null,
+    }));
+
+    const lineMatches = suggestInvoiceLineMatches(
+      extractedData.poLines.map((line) => ({
+        description: line.description,
+        supplierSku: line.supplierSku ?? null,
+      })),
+      typedProducts,
+    );
+
     return NextResponse.json({
       success: true,
       data: extractedData,
+      lineMatches,
+      productOptions,
     });
   } catch (error) {
     console.error('Unexpected error:', error);

@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { authenticatedFetch } from '@/lib/api-client';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 interface Supplier {
   id: string;
@@ -47,6 +48,11 @@ interface InventoryRow {
   supplier: Supplier | null;
 }
 
+type ConfirmState =
+  | { type: 'none' }
+  | { type: 'deleteProduct'; product: Product }
+  | { type: 'deleteFolder'; folderId: string; folderName: string };
+
 const MobileBarcodeScanner = dynamic(
   () => import('@/components/MobileBarcodeScanner'),
   { ssr: false },
@@ -59,7 +65,8 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [stockFilter, setStockFilter] = useState<'all' | 'onHand' | 'inTransit'>('all');
+  const [stockFilter, setStockFilter] = useState<'all' | 'onHand' | 'inTransit' | 'zeroStock'>('all');
+  const [sortBy, setSortBy] = useState<'nameAsc' | 'nameDesc' | 'onHandDesc' | 'inTransitDesc' | 'newest'>('newest');
   const [activeFolderId, setActiveFolderId] = useState<string>('all');
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [isDraggingFolder, setIsDraggingFolder] = useState(false);
@@ -90,7 +97,9 @@ export default function InventoryPage() {
   }, [foldersPanelCollapsed]);
 
   const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
+  const [confirmState, setConfirmState] = useState<ConfirmState>({ type: 'none' });
 
   const [customFolders, setCustomFolders] = useState<
     { id: string; name: string; dbId?: string; parentId?: string | null }[]
@@ -366,30 +375,51 @@ export default function InventoryPage() {
 
   const visibleItems = useMemo(
     () => {
-      // Only show products that have stock in hand or quantity in transit
-      let nonZeroStock = filteredItems.filter((row) => {
-        const onHand = row.inventory?.quantityOnHand ?? 0;
-        const inTransit = row.quantityInTransit ?? 0;
-        return onHand > 0 || inTransit > 0;
-      });
+      let visible = [...filteredItems];
 
       if (stockFilter === 'onHand') {
-        nonZeroStock = nonZeroStock.filter((row) => {
+        visible = visible.filter((row) => {
           const onHand = row.inventory?.quantityOnHand ?? 0;
           return onHand > 0;
         });
       } else if (stockFilter === 'inTransit') {
-        nonZeroStock = nonZeroStock.filter((row) => {
+        visible = visible.filter((row) => {
           const inTransit = row.quantityInTransit ?? 0;
           return inTransit > 0;
         });
+      } else if (stockFilter === 'zeroStock') {
+        visible = visible.filter((row) => {
+          const onHand = row.inventory?.quantityOnHand ?? 0;
+          const inTransit = row.quantityInTransit ?? 0;
+          return onHand <= 0 && inTransit <= 0;
+        });
       }
 
-      if (activeFolderId === 'all') return nonZeroStock;
+      if (activeFolderId !== 'all') {
+        visible = visible.filter((row) => row.product.category === activeFolderId);
+      }
 
-      return nonZeroStock.filter((row) => row.product.category === activeFolderId);
+      visible.sort((a, b) => {
+        switch (sortBy) {
+          case 'nameDesc':
+            return b.product.name.localeCompare(a.product.name);
+          case 'onHandDesc':
+            return (b.inventory?.quantityOnHand ?? 0) - (a.inventory?.quantityOnHand ?? 0)
+              || a.product.name.localeCompare(b.product.name);
+          case 'inTransitDesc':
+            return (b.quantityInTransit ?? 0) - (a.quantityInTransit ?? 0)
+              || a.product.name.localeCompare(b.product.name);
+          case 'newest':
+            return new Date(b.product.updatedAt).getTime() - new Date(a.product.updatedAt).getTime();
+          case 'nameAsc':
+          default:
+            return a.product.name.localeCompare(b.product.name);
+        }
+      });
+
+      return visible;
     },
-    [filteredItems, activeFolderId, stockFilter],
+    [filteredItems, activeFolderId, sortBy, stockFilter],
   );
 
   const handleRefresh = async () => {
@@ -458,15 +488,7 @@ export default function InventoryPage() {
     }
   };
 
-  const handleDeleteProduct = async (product: Product) => {
-    if (
-      !window.confirm(
-        `Delete "${product.name}" from inventory? This will also remove any on-hand and in-transit records for this product.`,
-      )
-    ) {
-      return;
-    }
-
+  const runDeleteProduct = async (product: Product) => {
     try {
       setDeletingProductId(product.id);
       const res = await authenticatedFetch(
@@ -484,7 +506,16 @@ export default function InventoryPage() {
       alert(err instanceof Error ? err.message : 'Failed to delete product');
     } finally {
       setDeletingProductId(null);
+      setConfirmState((current) =>
+        current.type === 'deleteProduct' && current.product.id === product.id
+          ? { type: 'none' }
+          : current,
+      );
     }
+  };
+
+  const handleDeleteProduct = (product: Product) => {
+    setConfirmState({ type: 'deleteProduct', product });
   };
 
   const showToast = (message: string) => {
@@ -606,16 +637,13 @@ export default function InventoryPage() {
     }
   };
 
-  const handleDeleteFolder = async (folderId: string) => {
+  const runDeleteFolder = async (folderId: string) => {
     // Do not allow deleting the synthetic "all" folder or category-based folders
     const folder = customFolders.find((f) => f.id === folderId);
     if (!folder) return;
 
-    // eslint-disable-next-line no-alert
-    const confirmed = window.confirm('Delete this folder? This cannot be undone.');
-    if (!confirmed) return;
-
     try {
+      setDeletingFolderId(folderId);
       const res = await authenticatedFetch(
         `/api/folders?id=${encodeURIComponent(folder.dbId || folderId)}`,
         {
@@ -636,7 +664,20 @@ export default function InventoryPage() {
     } catch (err) {
       // eslint-disable-next-line no-alert
       alert(err instanceof Error ? err.message : 'Failed to delete folder');
+    } finally {
+      setDeletingFolderId(null);
+      setConfirmState((current) =>
+        current.type === 'deleteFolder' && current.folderId === folderId
+          ? { type: 'none' }
+          : current,
+      );
     }
+  };
+
+  const handleDeleteFolder = (folderId: string) => {
+    const folder = customFolders.find((f) => f.id === folderId);
+    if (!folder) return;
+    setConfirmState({ type: 'deleteFolder', folderId, folderName: folder.name });
   };
 
   const handleProductDragStart = (
@@ -764,6 +805,32 @@ export default function InventoryPage() {
     } catch (err) {
       // eslint-disable-next-line no-alert
       alert(err instanceof Error ? err.message : 'Failed to move folder');
+    }
+  };
+
+  const confirmDialogOpen = confirmState.type !== 'none';
+  const confirmDialogTitle =
+    confirmState.type === 'deleteProduct' ? 'Delete product?' : 'Delete folder?';
+  const confirmDialogMessage =
+    confirmState.type === 'deleteProduct'
+      ? `Delete "${confirmState.product.name}" from inventory? This will also remove any on-hand and in-transit records for this product.`
+      : confirmState.type === 'deleteFolder'
+        ? `Delete "${confirmState.folderName}"? This cannot be undone.`
+        : '';
+  const confirmDialogLoading =
+    confirmState.type === 'deleteProduct'
+      ? deletingProductId === confirmState.product.id
+      : confirmState.type === 'deleteFolder'
+        ? deletingFolderId === confirmState.folderId
+        : false;
+
+  const handleConfirmDialogConfirm = () => {
+    if (confirmState.type === 'deleteProduct') {
+      void runDeleteProduct(confirmState.product);
+      return;
+    }
+    if (confirmState.type === 'deleteFolder') {
+      void runDeleteFolder(confirmState.folderId);
     }
   };
 
@@ -900,6 +967,27 @@ export default function InventoryPage() {
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
           {/* Row 1: Search (full width on mobile) */}
           <div className="flex items-center gap-2 flex-1 sm:flex-none sm:ml-auto sm:order-2">
+            <select
+              value={stockFilter}
+              onChange={(e) => setStockFilter(e.target.value as 'all' | 'onHand' | 'inTransit' | 'zeroStock')}
+              className="hidden sm:block rounded-md bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-600"
+            >
+              <option value="all">All stock</option>
+              <option value="onHand">In hand only</option>
+              <option value="inTransit">In transit only</option>
+              <option value="zeroStock">Zero stock only</option>
+            </select>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'nameAsc' | 'nameDesc' | 'onHandDesc' | 'inTransitDesc' | 'newest')}
+              className="hidden sm:block rounded-md bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-600"
+            >
+              <option value="newest">Sort: Recently added</option>
+              <option value="nameAsc">Sort: Name A-Z</option>
+              <option value="nameDesc">Sort: Name Z-A</option>
+              <option value="onHandDesc">Sort: Most in hand</option>
+              <option value="inTransitDesc">Sort: Most in transit</option>
+            </select>
             <div className="relative flex-1 sm:max-w-xs sm:w-72">
               <input
                 value={search}
@@ -967,8 +1055,8 @@ export default function InventoryPage() {
               New item
             </button>
           </div>
-          {/* Row 2: Breadcrumb + view toggle + new item (mobile) */}
-          <div className="flex items-center justify-between gap-2 sm:order-1 sm:flex-shrink-0">
+          {/* Row 2: Breadcrumb (mobile stacks above controls) */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:order-1 sm:flex-shrink-0">
             <div className="flex items-center gap-1.5 text-xs text-stone-500 min-w-0 overflow-hidden">
               {/* Mobile folders button - always visible on mobile */}
               <button
@@ -1020,8 +1108,29 @@ export default function InventoryPage() {
                 </span>
               ))}
             </div>
-            {/* View toggle + new item - mobile only */}
-            <div className="flex items-center gap-1.5 sm:hidden flex-shrink-0">
+            {/* Mobile controls row */}
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-1.5 sm:hidden">
+              <select
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value as 'all' | 'onHand' | 'inTransit' | 'zeroStock')}
+                className="min-w-0 w-full rounded-md bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-[11px] px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-600"
+              >
+                <option value="all">All</option>
+                <option value="onHand">In hand</option>
+                <option value="inTransit">Transit</option>
+                <option value="zeroStock">Zero</option>
+              </select>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'nameAsc' | 'nameDesc' | 'onHandDesc' | 'inTransitDesc' | 'newest')}
+                className="min-w-0 w-full rounded-md bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-[11px] px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-600"
+              >
+                <option value="newest">Newest</option>
+                <option value="nameAsc">A-Z</option>
+                <option value="nameDesc">Z-A</option>
+                <option value="onHandDesc">In hand</option>
+                <option value="inTransitDesc">Transit</option>
+              </select>
               <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-0.5">
                 <button
                   onClick={() => setViewMode('grid')}
@@ -1051,7 +1160,7 @@ export default function InventoryPage() {
               <button
                 type="button"
                 onClick={() => router.push('/inventory/new')}
-                className="px-2.5 py-1.5 text-xs rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700 whitespace-nowrap"
+                className="col-span-full w-full px-2.5 py-1.5 text-xs rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-700"
               >
                 New item
               </button>
@@ -1320,7 +1429,8 @@ export default function InventoryPage() {
                               <button
                                 type="button"
                                 onClick={() => handleDeleteFolder(folder.id)}
-                                className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50"
+                                disabled={deletingFolderId === folder.id}
+                                className="ml-1 inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50"
                                 aria-label="Delete folder"
                               >
                                 ×
@@ -1673,7 +1783,7 @@ export default function InventoryPage() {
                           </button>
                         )}
                         {isCustom && (
-                          <button type="button" onClick={() => handleDeleteFolder(folder.id)} className="inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50">×</button>
+                          <button type="button" onClick={() => handleDeleteFolder(folder.id)} disabled={deletingFolderId === folder.id} className="inline-flex items-center justify-center h-5 w-5 rounded-full text-xs text-stone-400 hover:text-red-500 hover:bg-red-50 disabled:opacity-50">×</button>
                         )}
                       </div>
                     </div>
@@ -1684,6 +1794,21 @@ export default function InventoryPage() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={confirmDialogOpen}
+        title={confirmDialogTitle}
+        message={confirmDialogMessage}
+        confirmLabel="Delete"
+        confirmTone="danger"
+        isConfirming={confirmDialogLoading}
+        onCancel={() => {
+          if (!confirmDialogLoading) {
+            setConfirmState({ type: 'none' });
+          }
+        }}
+        onConfirm={handleConfirmDialogConfirm}
+      />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/contexts/AuthContext';
 import { authenticatedFetch } from '@/lib/api-client';
@@ -1097,6 +1098,8 @@ export default function ViewDataPage() {
                                     const isReceived = lineStatus.status === 'received';
                                     const isPartial = lineStatus.status === 'partial';
                                     const isLongDescription = (line.description || '').length > 60;
+                                    const linkedTransit = data?.transit.find((t) => t.poLineId === line.id);
+                                    const linkedProductId = linkedTransit?.productId || null;
 
                                     return (
                                       <tr
@@ -1114,7 +1117,17 @@ export default function ViewDataPage() {
                                             : 'text-xs sm:text-sm'
                                             }`}
                                         >
-                                          <span className="break-words">{line.description}</span>
+                                          {linkedProductId ? (
+                                            <Link
+                                              href={`/inventory/${linkedProductId}`}
+                                              className="break-words underline decoration-stone-300 underline-offset-2 hover:text-amber-700 hover:decoration-amber-600"
+                                              title="Open inventory product"
+                                            >
+                                              {line.description}
+                                            </Link>
+                                          ) : (
+                                            <span className="break-words">{line.description}</span>
+                                          )}
                                         </td>
                                         <td className="hidden sm:table-cell px-3 py-3 text-sm text-stone-500 dark:text-stone-400 font-mono">
                                           {line.supplierSku || '-'}

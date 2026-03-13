@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { authenticatedFetch } from '@/lib/api-client';
 
 interface PreviewVariant {
@@ -28,34 +28,88 @@ interface LocalProduct {
     primarysku: string | null;
 }
 
+interface PreviewResponse {
+    success?: boolean;
+    error?: string;
+    message?: string;
+    data?: {
+        variants?: PreviewVariant[];
+        localProducts?: LocalProduct[];
+    };
+}
+
 export default function ShopifySyncPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const didLoadRef = useRef(false);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [shopifyMessage, setShopifyMessage] = useState<string | null>(null);
+    const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
 
     const [variants, setVariants] = useState<PreviewVariant[]>([]);
     const [localProducts, setLocalProducts] = useState<LocalProduct[]>([]);
 
-    useEffect(() => {
-        async function load() {
-            try {
-                const res = await authenticatedFetch('/api/inventory/shopify-sync/preview', {
-                    method: 'POST'
-                });
-                const json = await res.json();
-                if (!res.ok || !json.success) throw new Error(json.error || 'Failed to connect to Shopify');
+    const loadPreview = async () => {
+        try {
+            setLoading(true);
+            setError(null);
+            setRetryAfterSeconds(null);
 
-                setVariants(json.data.variants || []);
-                setLocalProducts(json.data.localProducts || []);
-            } catch (err: any) {
-                setError(err.message);
-            } finally {
-                setLoading(false);
+            const res = await authenticatedFetch('/api/inventory/shopify-sync/preview', {
+                method: 'POST'
+            });
+            const json: PreviewResponse = await res.json();
+
+            if (res.status === 429) {
+                setError('Too many requests. Please wait a moment, then retry the Shopify sync preview.');
+                setRetryAfterSeconds(60);
+                setVariants([]);
+                setLocalProducts([]);
+                return;
             }
+
+            if (!res.ok || !json.success) {
+                throw new Error(json.error || 'Failed to connect to Shopify');
+            }
+
+            setVariants(json.data?.variants || []);
+            setLocalProducts(json.data?.localProducts || []);
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Failed to connect to Shopify');
+        } finally {
+            setLoading(false);
         }
-        load();
+    };
+
+    useEffect(() => {
+        const shopifyStatus = searchParams.get('shopify');
+        if (shopifyStatus === 'connected') {
+            setShopifyMessage('Shopify account connected. Review the import below to continue syncing.');
+        }
+    }, [searchParams]);
+
+    useEffect(() => {
+        if (didLoadRef.current) return;
+        didLoadRef.current = true;
+        loadPreview();
     }, []);
+
+    useEffect(() => {
+        if (retryAfterSeconds == null || retryAfterSeconds <= 0) {
+            return;
+        }
+
+        const timeout = window.setTimeout(() => {
+            setRetryAfterSeconds((current) => {
+                if (current == null) return null;
+                return current > 1 ? current - 1 : null;
+            });
+        }, 1000);
+
+        return () => window.clearTimeout(timeout);
+    }, [retryAfterSeconds]);
 
     const handleActionChange = (index: number, action: 'create' | 'update' | 'ignore') => {
         const newVariants = [...variants];
@@ -78,6 +132,13 @@ export default function ShopifySyncPage() {
         setVariants(newVariants);
     };
 
+    const handleSkuChange = (index: number, value: string) => {
+        const newVariants = [...variants];
+        const trimmed = value.trim();
+        newVariants[index].sku = trimmed.length > 0 ? trimmed : null;
+        setVariants(newVariants);
+    };
+
     const handleExecute = async () => {
         try {
             setSaving(true);
@@ -90,13 +151,14 @@ export default function ShopifySyncPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            const json = await res.json();
+            const json: PreviewResponse = await res.json();
             if (!res.ok || !json.success) throw new Error(json.error || 'Failed to sync execution');
 
             alert(json.message);
             router.push('/inventory');
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Failed to sync execution');
+        } finally {
             setSaving(false);
         }
     };
@@ -115,20 +177,20 @@ export default function ShopifySyncPage() {
     return (
         <div className="h-full flex flex-col bg-[#f9f9f8] dark:bg-stone-900">
             <div className="flex-none px-4 lg:px-6 pt-6 pb-4 border-b border-stone-200 dark:border-stone-800 bg-[#f9f9f8] dark:bg-stone-900 z-10">
-                <div className="flex flex-row items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
+                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                    <div className="min-w-0 lg:max-w-[72%]">
+                        <h1 className="text-2xl font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2 leading-tight">
                             <img src="/Shopify_icon.svg" className="w-6 h-6" alt="Shopify" />
                             Review Shopify Import
                         </h1>
-                        <p className="text-sm text-stone-500 mt-1">
+                        <p className="text-sm text-stone-500 mt-2 leading-relaxed">
                             We found {variants.length} active variants on your Shopify store. Please review the mapping below before continuing to ensure no duplicates are created. You can link incoming products with existing stock.
                         </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-3 shrink-0 self-start">
                         <button
                             onClick={() => router.push('/inventory')}
-                            className="px-4 py-2 border border-stone-200 text-stone-700 bg-white rounded-md hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 transition"
+                            className="h-12 px-6 border border-stone-300 text-stone-700 bg-white rounded-xl hover:bg-stone-50 active:scale-[0.99] dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 transition disabled:opacity-60 disabled:cursor-not-allowed text-base font-medium"
                             disabled={saving}
                         >
                             Cancel
@@ -136,15 +198,50 @@ export default function ShopifySyncPage() {
                         <button
                             onClick={handleExecute}
                             disabled={saving}
-                            className="px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 transition"
+                            aria-busy={saving}
+                            className="h-12 min-w-[188px] px-6 bg-amber-600 text-white rounded-xl hover:bg-amber-700 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed transition inline-flex items-center justify-center gap-2 text-base font-semibold"
                         >
-                            {saving ? 'Syncing...' : 'Confirm & Sync'}
+                            {saving && (
+                                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/70 border-t-transparent" />
+                            )}
+                            <span>{saving ? 'Syncing...' : 'Confirm & Sync'}</span>
                         </button>
                     </div>
                 </div>
                 {error && (
                     <div className="mt-4 p-3 bg-red-50 text-red-700 border border-red-200 rounded-md">
-                        {error}
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div>
+                                <p>{error}</p>
+                                {retryAfterSeconds !== null && (
+                                    <p className="mt-1 text-xs text-red-600">
+                                        Retry available in about {retryAfterSeconds}s.
+                                    </p>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={() => loadPreview()}
+                                    disabled={loading || retryAfterSeconds !== null}
+                                    className="px-3 py-1.5 rounded-md border border-red-200 bg-white text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Retry preview
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => router.push('/account')}
+                                    className="px-3 py-1.5 rounded-md border border-red-200 bg-white text-sm font-medium text-red-700 hover:bg-red-50"
+                                >
+                                    Back to account
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {shopifyMessage && !error && (
+                    <div className="mt-4 p-3 bg-green-50 text-green-700 border border-green-200 rounded-md">
+                        {shopifyMessage}
                     </div>
                 )}
             </div>
@@ -170,11 +267,25 @@ export default function ShopifySyncPage() {
                                     <td className="p-3 text-stone-500 dark:text-stone-400">
                                         {v.sku && <span className="block">SKU: {v.sku}</span>}
                                         {v.barcode && <span className="block">Barcode: {v.barcode}</span>}
+                                        {!v.sku && !v.barcode && (
+                                            <span className="block text-stone-400 italic">No SKU or barcode from Shopify</span>
+                                        )}
+                                        <div className="mt-2">
+                                            <label className="sr-only" htmlFor={`manual-sku-${i}`}>Manual SKU</label>
+                                            <input
+                                                id={`manual-sku-${i}`}
+                                                type="text"
+                                                value={v.sku || ''}
+                                                onChange={(e) => handleSkuChange(i, e.target.value)}
+                                                placeholder="Add SKU (optional)"
+                                                className="w-full max-w-[220px] border-stone-200 dark:border-stone-700 rounded-md text-sm bg-white dark:bg-stone-900 py-1.5 px-2 focus:border-amber-500 focus:ring-amber-500"
+                                            />
+                                        </div>
                                     </td>
                                     <td className="p-3">
                                         <select
                                             value={v.action}
-                                            onChange={(e) => handleActionChange(i, e.target.value as any)}
+                                            onChange={(e) => handleActionChange(i, e.target.value as 'create' | 'update' | 'ignore')}
                                             className="border-stone-200 dark:border-stone-700 rounded-md text-sm bg-white dark:bg-stone-900 py-1.5 focus:border-amber-500 focus:ring-amber-500"
                                         >
                                             <option value="create">Create New Item</option>

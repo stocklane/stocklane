@@ -42,6 +42,43 @@ interface ExtractedData {
   notes?: string;
 }
 
+type MatchType =
+  | 'exact_primary_sku'
+  | 'exact_supplier_sku'
+  | 'exact_barcode'
+  | 'exact_name'
+  | 'alias'
+  | 'fuzzy_name';
+
+interface ProductOption {
+  id: string;
+  name: string;
+  primarySku: string | null;
+  supplierSku: string | null;
+}
+
+interface LineMatchSuggestion {
+  productId: string;
+  productName: string;
+  primarySku: string | null;
+  supplierSku: string | null;
+  matchType: MatchType;
+  confidence: number;
+  reason: string;
+}
+
+interface LineMatchResult {
+  suggestions: LineMatchSuggestion[];
+  suggestedProductId: string | null;
+}
+
+interface LineReviewState {
+  action: 'link' | 'create';
+  targetProductId: string | null;
+  reviewed: boolean;
+  shopifyBound: boolean;
+}
+
 interface DuplicateMatch {
   id: string;
   invoiceNumber: string | null;
@@ -57,6 +94,8 @@ interface GroupResult {
   group: FileGroup;
   status: 'pending' | 'processing' | 'extracted' | 'approved' | 'success' | 'cancelled' | 'error';
   extractedData?: ExtractedData;
+  lineMatches?: LineMatchResult[];
+  productOptions?: ProductOption[];
   error?: string;
   duplicates?: DuplicateMatch[];
   duplicatesChecked?: boolean;
@@ -76,8 +115,9 @@ function ImportPageContent() {
   const [isDragging, setIsDragging] = useState(false);
   const [draggedFile, setDraggedFile] = useState<{ groupId: string; fileIndex: number } | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
-  const [editedData, setEditedData] = useState<{ [key: number]: ExtractedData }>({});
-  const [savingIndex, setSavingIndex] = useState<number | null>(null);
+  const [editedData, setEditedData] = useState<Record<string, ExtractedData>>({});
+  const [lineReviews, setLineReviews] = useState<Record<string, LineReviewState[]>>({});
+  const [savingGroupId, setSavingGroupId] = useState<string | null>(null);
   const [dismissedDuplicates, setDismissedDuplicates] = useState<Set<string>>(new Set());
   const [manualError, setManualError] = useState<string | null>(null);
   const [manualSaving, setManualSaving] = useState(false);
@@ -88,13 +128,84 @@ function ImportPageContent() {
     router.push('/purchasing/view');
   };
 
-  const createNewGroup = (files: File[]) => {
-    const newGroup: FileGroup = {
-      id: crypto.randomUUID(),
-      name: `Group ${fileGroups.length + 1}`,
-      files: files,
-    };
-    setFileGroups(prev => [...prev, newGroup]);
+  const getMatchLabel = (matchType: MatchType) => {
+    switch (matchType) {
+      case 'exact_primary_sku':
+        return 'Exact StockLane SKU';
+      case 'exact_supplier_sku':
+        return 'Exact supplier SKU';
+      case 'exact_barcode':
+        return 'Exact barcode';
+      case 'exact_name':
+        return 'Exact name';
+      case 'alias':
+        return 'Alias';
+      case 'fuzzy_name':
+        return 'Fuzzy name';
+      default:
+        return 'Suggested';
+    }
+  };
+
+  const getLiveTopSuggestion = (
+    line: ExtractedData['poLines'][number],
+    originalMatch: LineMatchResult | undefined,
+    productOptions: ProductOption[] | undefined,
+  ): LineMatchSuggestion | null => {
+    const description = line.description.trim().toLowerCase();
+    const supplierSku = (line.supplierSku || '').trim().toLowerCase();
+    const options = productOptions || [];
+
+    if (supplierSku) {
+      const exactPrimarySku = options.find(
+        (product) => (product.primarySku || '').trim().toLowerCase() === supplierSku,
+      );
+      if (exactPrimarySku) {
+        return {
+          productId: exactPrimarySku.id,
+          productName: exactPrimarySku.name,
+          primarySku: exactPrimarySku.primarySku,
+          supplierSku: exactPrimarySku.supplierSku,
+          matchType: 'exact_primary_sku',
+          confidence: 1,
+          reason: `Exact StockLane SKU match on ${line.supplierSku}`,
+        };
+      }
+
+      const exactSupplierSku = options.find(
+        (product) => (product.supplierSku || '').trim().toLowerCase() === supplierSku,
+      );
+      if (exactSupplierSku) {
+        return {
+          productId: exactSupplierSku.id,
+          productName: exactSupplierSku.name,
+          primarySku: exactSupplierSku.primarySku,
+          supplierSku: exactSupplierSku.supplierSku,
+          matchType: 'exact_supplier_sku',
+          confidence: 1,
+          reason: `Exact supplier SKU match on ${line.supplierSku}`,
+        };
+      }
+    }
+
+    if (description) {
+      const exactName = options.find(
+        (product) => product.name.trim().toLowerCase() === description,
+      );
+      if (exactName) {
+        return {
+          productId: exactName.id,
+          productName: exactName.name,
+          primarySku: exactName.primarySku,
+          supplierSku: exactName.supplierSku,
+          matchType: 'exact_name',
+          confidence: 0.95,
+          reason: `Exact name match on ${line.description}`,
+        };
+      }
+    }
+
+    return originalMatch?.suggestions?.[0] || null;
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -212,6 +323,7 @@ function ImportPageContent() {
   };
 
   const handleRemoveFile = (groupId: string, fileIndex: number) => {
+    let removedGroup = false;
     setFileGroups(prev => {
       const newGroups = prev.map(group => {
         if (group.id === groupId) {
@@ -223,8 +335,24 @@ function ImportPageContent() {
         return group;
       });
       // Remove empty groups
-      return newGroups.filter(g => g.files.length > 0);
+      const filteredGroups = newGroups.filter(g => g.files.length > 0);
+      removedGroup = !filteredGroups.some((group) => group.id === groupId);
+      return filteredGroups;
     });
+
+    if (removedGroup) {
+      setGroupResults((prev) => prev.filter((result) => result.group.id !== groupId));
+      setEditedData((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      setLineReviews((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+    }
   };
 
   const handleRenameGroup = (groupId: string, newName: string) => {
@@ -235,23 +363,92 @@ function ImportPageContent() {
     );
   };
 
-  const handleDeleteGroup = (groupId: string) => {
-    setFileGroups(prev => prev.filter(group => group.id !== groupId));
-  };
-
   const handleDeleteResult = (groupId: string) => {
     setGroupResults(prev =>
       prev.map((result) =>
         result.group.id === groupId ? { ...result, status: 'cancelled' as const } : result
       )
     );
+    setEditedData((prev) => {
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+    setLineReviews((prev) => {
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+  };
+
+  const getLineReviews = (groupId: string): LineReviewState[] => lineReviews[groupId] || [];
+
+  const updateLineReview = (
+    groupId: string,
+    lineIndex: number,
+    updates: Partial<LineReviewState>,
+  ) => {
+    setLineReviews((prev) => {
+      const current = prev[groupId] || [];
+      const next = [...current];
+      const existing = next[lineIndex] || {
+        action: 'create' as const,
+        targetProductId: null,
+        reviewed: false,
+        shopifyBound: false,
+      };
+      next[lineIndex] = { ...existing, ...updates };
+      return { ...prev, [groupId]: next };
+    });
+  };
+
+  const confirmLineReview = (groupId: string, lineIndex: number) => {
+    updateLineReview(groupId, lineIndex, { reviewed: true });
+  };
+
+  const acceptSuggestedMatches = (groupId: string) => {
+    const result = groupResults.find((entry) => entry.group.id === groupId);
+    if (!result?.lineMatches) return;
+
+    setLineReviews((prev) => {
+      const current = [...(prev[groupId] || [])];
+      result.lineMatches!.forEach((match, index) => {
+        if (!match.suggestedProductId) return;
+        current[index] = {
+          action: 'link',
+          targetProductId: match.suggestedProductId,
+          reviewed: true,
+          shopifyBound: current[index]?.shopifyBound || false,
+        };
+      });
+      return { ...prev, [groupId]: current };
+    });
+  };
+
+  const createAllUnmatched = (groupId: string) => {
+    const result = groupResults.find((entry) => entry.group.id === groupId);
+    if (!result?.extractedData) return;
+
+    setLineReviews((prev) => {
+      const current = [...(prev[groupId] || [])];
+      result.extractedData!.poLines.forEach((_, index) => {
+        if (current[index]?.targetProductId) return;
+        current[index] = {
+          action: 'create',
+          targetProductId: null,
+          reviewed: true,
+          shopifyBound: current[index]?.shopifyBound || false,
+        };
+      });
+      return { ...prev, [groupId]: current };
+    });
   };
 
   const handleSavePurchaseOrder = async (groupId: string) => {
     const resultIndex = groupResults.findIndex(r => r.group.id === groupId);
     if (resultIndex === -1) return;
 
-    const data = getEditableData(resultIndex);
+    const data = getEditableData(groupId);
     if (!data) return;
 
     // Validate required fields
@@ -265,7 +462,22 @@ function ImportPageContent() {
       return;
     }
 
-    setSavingIndex(resultIndex);
+    const reviews = getLineReviews(groupId);
+    const invalidReviewIndex = data.poLines.findIndex((_, index) => {
+      const review = reviews[index];
+      if (!review?.reviewed) return true;
+      if (review.action === 'link') {
+        return !review.targetProductId;
+      }
+      return false;
+    });
+
+    if (invalidReviewIndex !== -1) {
+      alert(`Review line ${invalidReviewIndex + 1} before saving.`);
+      return;
+    }
+
+    setSavingGroupId(groupId);
 
     try {
       // Get the files for this group
@@ -274,7 +486,18 @@ function ImportPageContent() {
 
       // Create FormData to include both data and files
       const formData = new FormData();
-      formData.append('data', JSON.stringify(data));
+      const payload = {
+        ...data,
+        poLines: data.poLines.map((line, index) => ({
+          ...line,
+          reviewDecision: {
+            action: reviews[index].action,
+            targetProductId: reviews[index].targetProductId,
+            shopifyBound: reviews[index].shopifyBound,
+          },
+        })),
+      };
+      formData.append('data', JSON.stringify(payload));
       formData.append('fileCount', files.length.toString());
       files.forEach((file, index) => {
         formData.append(`file${index}`, file);
@@ -298,17 +521,27 @@ function ImportPageContent() {
       // Remove the file group and result after successful save
       setFileGroups(prev => prev.filter(g => g.id !== groupId));
       setGroupResults(prev => prev.filter(r => r.group.id !== groupId));
+      setEditedData((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      setLineReviews((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
 
       // Auto-hide success message after 5 seconds
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to save purchase order');
     } finally {
-      setSavingIndex(null);
+      setSavingGroupId(null);
     }
   };
 
-  const handleManualSubmit = async (data: any) => {
+  const handleManualSubmit = async (data: ExtractedData) => {
     setManualError(null);
 
     if (!data?.supplier?.name) {
@@ -349,38 +582,42 @@ function ImportPageContent() {
     }
   };
 
-  const getEditableData = (index: number): ExtractedData | undefined => {
-    return editedData[index] || groupResults[index]?.extractedData;
+  const getEditableData = (groupId: string): ExtractedData | undefined => {
+    return editedData[groupId] || groupResults.find((result) => result.group.id === groupId)?.extractedData;
   };
 
-  const updateField = (resultIndex: number, field: string, value: any) => {
-    const currentData = getEditableData(resultIndex);
+  const updateField = (groupId: string, field: string, value: unknown) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const keys = field.split('.');
     const updated = JSON.parse(JSON.stringify(currentData));
 
-    let obj: any = updated;
+    let obj: Record<string, unknown> = updated as Record<string, unknown>;
     for (let i = 0; i < keys.length - 1; i++) {
-      obj = obj[keys[i]];
+      obj = obj[keys[i]] as Record<string, unknown>;
     }
     obj[keys[keys.length - 1]] = value;
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
   };
 
-  const updateLineItem = (resultIndex: number, lineIndex: number, field: string, value: any) => {
-    const currentData = getEditableData(resultIndex);
+  const updateLineItem = (groupId: string, lineIndex: number, field: string, value: unknown) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const updated = JSON.parse(JSON.stringify(currentData));
     updated.poLines[lineIndex][field] = value;
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
+
+    if (field === 'description' || field === 'supplierSku') {
+      updateLineReview(groupId, lineIndex, { reviewed: false });
+    }
   };
 
-  const addLineItem = (resultIndex: number) => {
-    const currentData = getEditableData(resultIndex);
+  const addLineItem = (groupId: string) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const updated = JSON.parse(JSON.stringify(currentData));
@@ -393,21 +630,50 @@ function ImportPageContent() {
       rrp: null,
     });
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
+
+    setLineReviews((prev) => ({
+      ...prev,
+      [groupId]: [
+        ...(prev[groupId] || []),
+        {
+          action: 'create',
+          targetProductId: null,
+          reviewed: false,
+          shopifyBound: false,
+        },
+      ],
+    }));
   };
 
-  const removeLineItem = (resultIndex: number, lineIndex: number) => {
-    const currentData = getEditableData(resultIndex);
+  const removeLineItem = (groupId: string, lineIndex: number) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const updated = JSON.parse(JSON.stringify(currentData));
     updated.poLines.splice(lineIndex, 1);
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
+
+    setLineReviews((prev) => ({
+      ...prev,
+      [groupId]: (prev[groupId] || []).filter((_, idx) => idx !== lineIndex),
+    }));
   };
 
   // Extract analysis logic into reusable function
   const analyzeGroup = async (groupIndex: number, group: FileGroup) => {
+    setEditedData((prev) => {
+      const next = { ...prev };
+      delete next[group.id];
+      return next;
+    });
+    setLineReviews((prev) => {
+      const next = { ...prev };
+      delete next[group.id];
+      return next;
+    });
+
     // Update status to processing
     setGroupResults(prev =>
       prev.map((result) =>
@@ -444,11 +710,23 @@ function ImportPageContent() {
               ...result,
               status: 'extracted' as const,
               extractedData: data.data,
+              lineMatches: data.lineMatches || [],
+              productOptions: data.productOptions || [],
               duplicatesChecked: false,
             }
             : result
         )
       );
+
+      setLineReviews((prev) => ({
+        ...prev,
+        [group.id]: (data.data?.poLines || []).map((_: ExtractedData['poLines'][number], lineIndex: number) => ({
+          action: data.lineMatches?.[lineIndex]?.suggestedProductId ? 'link' : 'create',
+          targetProductId: data.lineMatches?.[lineIndex]?.suggestedProductId || null,
+          reviewed: false,
+          shopifyBound: false,
+        })),
+      }));
 
       // Check for duplicates
       try {
@@ -917,6 +1195,8 @@ function ImportPageContent() {
                     return null;
                   }
 
+                  const groupLineReviews = getLineReviews(result.group.id);
+
                   return (
                     <div key={index} className="bg-white dark:bg-stone-800 rounded-lg shadow-md p-6 border border-stone-200 dark:border-stone-700">
                       <div className="flex items-center gap-2 mb-4">
@@ -947,9 +1227,23 @@ function ImportPageContent() {
                       )}
 
                       {result.status === 'error' && (
-                        <div className="text-sm text-red-600">
-                          <p className="font-medium">Error:</p>
-                          <p>{result.error}</p>
+                        <div className="text-sm text-red-600 space-y-3">
+                          <div>
+                            <p className="font-medium">Error:</p>
+                            <p>{result.error}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleAnalyzeGroup(result.group.id)}
+                              className="inline-flex items-center px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-medium hover:bg-amber-700"
+                            >
+                              Retry analysis
+                            </button>
+                            <span className="text-xs text-stone-500 dark:text-stone-400">
+                              If you just hit a rate limit, wait a moment and retry this group.
+                            </span>
+                          </div>
                         </div>
                       )}
 
@@ -1005,8 +1299,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Supplier Name *</label>
                                 <input
                                   type="text"
-                                  value={getEditableData(index)?.supplier.name || ''}
-                                  onChange={(e) => updateField(index, 'supplier.name', e.target.value)}
+                                  value={getEditableData(result.group.id)?.supplier.name || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.name', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1014,8 +1308,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Email</label>
                                 <input
                                   type="email"
-                                  value={getEditableData(index)?.supplier.email || ''}
-                                  onChange={(e) => updateField(index, 'supplier.email', e.target.value)}
+                                  value={getEditableData(result.group.id)?.supplier.email || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.email', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1023,8 +1317,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Phone</label>
                                 <input
                                   type="text"
-                                  value={getEditableData(index)?.supplier.phone || ''}
-                                  onChange={(e) => updateField(index, 'supplier.phone', e.target.value)}
+                                  value={getEditableData(result.group.id)?.supplier.phone || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.phone', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1032,16 +1326,16 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">VAT Number</label>
                                 <input
                                   type="text"
-                                  value={getEditableData(index)?.supplier.vatNumber || ''}
-                                  onChange={(e) => updateField(index, 'supplier.vatNumber', e.target.value)}
+                                  value={getEditableData(result.group.id)?.supplier.vatNumber || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.vatNumber', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
                               <div className="col-span-2">
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Address</label>
                                 <textarea
-                                  value={getEditableData(index)?.supplier.address || ''}
-                                  onChange={(e) => updateField(index, 'supplier.address', e.target.value)}
+                                  value={getEditableData(result.group.id)?.supplier.address || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.address', e.target.value)}
                                   rows={2}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
@@ -1057,8 +1351,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Invoice Number</label>
                                 <input
                                   type="text"
-                                  value={getEditableData(index)?.purchaseOrder.invoiceNumber || ''}
-                                  onChange={(e) => updateField(index, 'purchaseOrder.invoiceNumber', e.target.value)}
+                                  value={getEditableData(result.group.id)?.purchaseOrder.invoiceNumber || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.invoiceNumber', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1066,8 +1360,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Invoice Date</label>
                                 <input
                                   type="date"
-                                  value={getEditableData(index)?.purchaseOrder.invoiceDate || ''}
-                                  onChange={(e) => updateField(index, 'purchaseOrder.invoiceDate', e.target.value)}
+                                  value={getEditableData(result.group.id)?.purchaseOrder.invoiceDate || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.invoiceDate', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1075,8 +1369,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Currency</label>
                                 <input
                                   type="text"
-                                  value={getEditableData(index)?.purchaseOrder.originalCurrency || ''}
-                                  onChange={(e) => updateField(index, 'purchaseOrder.originalCurrency', e.target.value)}
+                                  value={getEditableData(result.group.id)?.purchaseOrder.originalCurrency || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.originalCurrency', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1084,8 +1378,8 @@ function ImportPageContent() {
                                 <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Payment Terms</label>
                                 <input
                                   type="text"
-                                  value={getEditableData(index)?.purchaseOrder.paymentTerms || ''}
-                                  onChange={(e) => updateField(index, 'purchaseOrder.paymentTerms', e.target.value)}
+                                  value={getEditableData(result.group.id)?.purchaseOrder.paymentTerms || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.paymentTerms', e.target.value)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1095,8 +1389,8 @@ function ImportPageContent() {
                             <div className="mt-4">
                               <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Notes</label>
                               <textarea
-                                value={getEditableData(index)?.notes || ''}
-                                onChange={(e) => updateField(index, 'notes', e.target.value)}
+                                value={getEditableData(result.group.id)?.notes || ''}
+                                onChange={(e) => updateField(result.group.id, 'notes', e.target.value)}
                                 rows={3}
                                 placeholder="Add notes or special instructions for receiving and booking in stock"
                                 className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
@@ -1108,16 +1402,32 @@ function ImportPageContent() {
                           <div>
                             <div className="flex items-center justify-between mb-3">
                               <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Line Items</h4>
-                              <button
-                                type="button"
-                                onClick={() => addLineItem(index)}
-                                className="inline-flex items-center px-3 py-1 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700"
-                              >
-                                <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                                </svg>
-                                Add Line
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => acceptSuggestedMatches(result.group.id)}
+                                  className="inline-flex items-center px-3 py-1 text-xs font-medium text-stone-700 bg-stone-100 dark:bg-stone-700 dark:text-stone-100 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600"
+                                >
+                                  Accept Suggested Matches
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => createAllUnmatched(result.group.id)}
+                                  className="inline-flex items-center px-3 py-1 text-xs font-medium text-stone-700 bg-stone-100 dark:bg-stone-700 dark:text-stone-100 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600"
+                                >
+                                  Create All Unmatched
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => addLineItem(result.group.id)}
+                                  className="inline-flex items-center px-3 py-1 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700"
+                                >
+                                  <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                  </svg>
+                                  Add Line
+                                </button>
+                              </div>
                             </div>
 
                             <div className="overflow-x-auto border border-stone-200 dark:border-stone-700 rounded-lg">
@@ -1130,17 +1440,31 @@ function ImportPageContent() {
                                     <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">Unit Price</th>
                                     <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">Line Total</th>
                                     <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">RRP</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase min-w-[320px]">StockLane Review</th>
                                     <th className="px-3 py-2 w-10"></th>
                                   </tr>
                                 </thead>
                                 <tbody className="bg-white dark:bg-stone-800 divide-y divide-stone-200 dark:divide-stone-700">
-                                  {getEditableData(index)?.poLines.map((line, lineIndex) => (
+                                  {getEditableData(result.group.id)?.poLines.map((line, lineIndex) => {
+                                    const review = groupLineReviews[lineIndex] || {
+                                      action: 'create' as const,
+                                      targetProductId: null,
+                                      reviewed: false,
+                                      shopifyBound: false,
+                                    };
+                                    const topSuggestion = getLiveTopSuggestion(
+                                      line,
+                                      result.lineMatches?.[lineIndex],
+                                      result.productOptions,
+                                    );
+
+                                    return (
                                     <tr key={lineIndex}>
                                       <td className="px-3 py-2">
                                         <input
                                           type="text"
                                           value={line.description}
-                                          onChange={(e) => updateLineItem(index, lineIndex, 'description', e.target.value)}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'description', e.target.value)}
                                           className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
                                         />
                                       </td>
@@ -1148,7 +1472,7 @@ function ImportPageContent() {
                                         <input
                                           type="text"
                                           value={line.supplierSku || ''}
-                                          onChange={(e) => updateLineItem(index, lineIndex, 'supplierSku', e.target.value)}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'supplierSku', e.target.value)}
                                           className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
                                         />
                                       </td>
@@ -1156,7 +1480,7 @@ function ImportPageContent() {
                                         <input
                                           type="number"
                                           value={line.quantity}
-                                          onChange={(e) => updateLineItem(index, lineIndex, 'quantity', parseFloat(e.target.value) || 0)}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'quantity', parseFloat(e.target.value) || 0)}
                                           className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
                                         />
                                       </td>
@@ -1165,7 +1489,7 @@ function ImportPageContent() {
                                           type="number"
                                           step="0.01"
                                           value={line.unitCostExVAT}
-                                          onChange={(e) => updateLineItem(index, lineIndex, 'unitCostExVAT', parseFloat(e.target.value) || 0)}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'unitCostExVAT', parseFloat(e.target.value) || 0)}
                                           className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
                                         />
                                       </td>
@@ -1174,7 +1498,7 @@ function ImportPageContent() {
                                           type="number"
                                           step="0.01"
                                           value={line.lineTotalExVAT}
-                                          onChange={(e) => updateLineItem(index, lineIndex, 'lineTotalExVAT', parseFloat(e.target.value) || 0)}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'lineTotalExVAT', parseFloat(e.target.value) || 0)}
                                           className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
                                         />
                                       </td>
@@ -1183,15 +1507,105 @@ function ImportPageContent() {
                                           type="number"
                                           step="0.01"
                                           value={line.rrp || ''}
-                                          onChange={(e) => updateLineItem(index, lineIndex, 'rrp', parseFloat(e.target.value) || null)}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'rrp', parseFloat(e.target.value) || null)}
                                           placeholder="Optional"
                                           className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
                                         />
                                       </td>
+                                      <td className="px-3 py-2 align-top">
+                                        <div className="space-y-2 min-w-[320px]">
+                                          {topSuggestion ? (
+                                            <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 p-2">
+                                              <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                                                {getMatchLabel(topSuggestion.matchType)}: {topSuggestion.productName}
+                                              </p>
+                                              <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                                                {topSuggestion.reason}
+                                              </p>
+                                            </div>
+                                          ) : (
+                                            <p className="text-xs text-stone-500 dark:text-stone-400">
+                                              No StockLane match found. Create a new SKU or choose an existing product.
+                                            </p>
+                                          )}
+
+                                          <div className="grid grid-cols-1 gap-2">
+                                            <select
+                                              value={review.action}
+                                              onChange={(e) =>
+                                                updateLineReview(result.group.id, lineIndex, {
+                                                  action: e.target.value as 'link' | 'create',
+                                                  reviewed: false,
+                                                  targetProductId:
+                                                    e.target.value === 'link'
+                                                      ? review.targetProductId || topSuggestion?.productId || null
+                                                      : null,
+                                                })
+                                              }
+                                              className="w-full px-2 py-1.5 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                            >
+                                              <option value="link">Link to existing StockLane product</option>
+                                              <option value="create">Create new StockLane SKU</option>
+                                            </select>
+
+                                            {review.action === 'link' ? (
+                                              <select
+                                                value={review.targetProductId || ''}
+                                                onChange={(e) =>
+                                                  updateLineReview(result.group.id, lineIndex, {
+                                                    targetProductId: e.target.value || null,
+                                                    reviewed: false,
+                                                  })
+                                                }
+                                                className="w-full px-2 py-1.5 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                              >
+                                                <option value="">Select a product</option>
+                                                {(result.productOptions || []).map((product) => (
+                                                  <option key={product.id} value={product.id}>
+                                                    {product.name}
+                                                    {product.primarySku ? ` (${product.primarySku})` : ''}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={review.shopifyBound}
+                                                  onChange={(e) =>
+                                                    updateLineReview(result.group.id, lineIndex, {
+                                                      shopifyBound: e.target.checked,
+                                                      reviewed: false,
+                                                    })
+                                                  }
+                                                  className="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-600"
+                                                />
+                                                Create Shopify draft on receive
+                                              </label>
+                                            )}
+                                          </div>
+
+                                          <div className="flex items-center justify-between">
+                                            <span
+                                              className={`text-xs font-medium ${review.reviewed ? 'text-green-700 dark:text-green-400' : 'text-stone-500 dark:text-stone-400'}`}
+                                            >
+                                              {review.reviewed ? 'Reviewed' : 'Awaiting confirmation'}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => confirmLineReview(result.group.id, lineIndex)}
+                                              disabled={review.action === 'link' && !review.targetProductId}
+                                              className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                              Confirm
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </td>
                                       <td className="px-3 py-2">
                                         <button
                                           type="button"
-                                          onClick={() => removeLineItem(index, lineIndex)}
+                                          onClick={() => removeLineItem(result.group.id, lineIndex)}
                                           className="text-amber-600 hover:text-amber-700"
                                         >
                                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1200,7 +1614,7 @@ function ImportPageContent() {
                                         </button>
                                       </td>
                                     </tr>
-                                  ))}
+                                  )})}
                                 </tbody>
                               </table>
                             </div>
@@ -1215,8 +1629,8 @@ function ImportPageContent() {
                                 <input
                                   type="number"
                                   step="0.01"
-                                  value={getEditableData(index)?.totals.subtotal || 0}
-                                  onChange={(e) => updateField(index, 'totals.subtotal', parseFloat(e.target.value) || 0)}
+                                  value={getEditableData(result.group.id)?.totals.subtotal || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.subtotal', parseFloat(e.target.value) || 0)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1225,8 +1639,8 @@ function ImportPageContent() {
                                 <input
                                   type="number"
                                   step="0.01"
-                                  value={getEditableData(index)?.totals.extras || 0}
-                                  onChange={(e) => updateField(index, 'totals.extras', parseFloat(e.target.value) || 0)}
+                                  value={getEditableData(result.group.id)?.totals.extras || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.extras', parseFloat(e.target.value) || 0)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1235,8 +1649,8 @@ function ImportPageContent() {
                                 <input
                                   type="number"
                                   step="0.01"
-                                  value={getEditableData(index)?.totals.vat || 0}
-                                  onChange={(e) => updateField(index, 'totals.vat', parseFloat(e.target.value) || 0)}
+                                  value={getEditableData(result.group.id)?.totals.vat || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.vat', parseFloat(e.target.value) || 0)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1245,8 +1659,8 @@ function ImportPageContent() {
                                 <input
                                   type="number"
                                   step="0.01"
-                                  value={getEditableData(index)?.totals.total || 0}
-                                  onChange={(e) => updateField(index, 'totals.total', parseFloat(e.target.value) || 0)}
+                                  value={getEditableData(result.group.id)?.totals.total || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.total', parseFloat(e.target.value) || 0)}
                                   className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
                                 />
                               </div>
@@ -1265,10 +1679,10 @@ function ImportPageContent() {
                             <button
                               type="button"
                               onClick={() => handleSavePurchaseOrder(result.group.id)}
-                              disabled={savingIndex === index}
+                              disabled={savingGroupId === result.group.id}
                               className="px-6 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                              {savingIndex === index ? 'Saving...' : 'Save Purchase Order'}
+                              {savingGroupId === result.group.id ? 'Saving...' : 'Save Purchase Order'}
                             </button>
                           </div>
                         </div>
