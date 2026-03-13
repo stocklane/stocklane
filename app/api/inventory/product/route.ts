@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
-import { deleteProductAndInventory } from '@/lib/db';
 import { applyRateLimit } from '@/lib/rate-limit';
 import { isValidUUID } from '@/lib/validation';
 import { clearCache } from '@/lib/cache';
@@ -79,6 +78,7 @@ interface ProductUpdatePayload {
   primarysku?: string | null;
   suppliersku?: string | null;
   category?: string | null;
+  folderid?: string | null;
   barcodes?: string[];
   tags?: string[];
   aliases?: string[];
@@ -105,6 +105,7 @@ interface ProductInsertPayload {
   aliases: string[];
   supplierid: string | null;
   category: string | null;
+  folderid: string | null;
   tags: string[];
   imageurl: string | null;
   shopify_bound: boolean;
@@ -140,6 +141,24 @@ async function ensureUniquePrimarySkuForUser(params: {
   return null;
 }
 
+async function validateFolderOwnership(params: {
+  supabase: Awaited<ReturnType<typeof requireAuth>>['supabase'];
+  userId: string;
+  folderId: string | null;
+}): Promise<boolean> {
+  if (!params.folderId) return true;
+  if (!isValidUUID(params.folderId)) return false;
+
+  const { data, error } = await params.supabase
+    .from('folders')
+    .select('id')
+    .eq('id', params.folderId)
+    .eq('user_id', params.userId)
+    .maybeSingle();
+
+  return !error && !!data;
+}
+
 // GET product + inventory + transit history for /inventory/[productId]
 export async function GET(request: NextRequest) {
   try {
@@ -162,6 +181,8 @@ export async function GET(request: NextRequest) {
       .from('products')
       .select('*')
       .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null)
       .single();
 
     if (productError || !productRow) {
@@ -213,6 +234,7 @@ export async function GET(request: NextRequest) {
       barcodes: productRow.barcodes ?? [],
       aliases: productRow.aliases ?? [],
       supplierId: productRow.supplierid ?? null,
+      folderId: productRow.folderid ?? null,
       category: productRow.category ?? null,
       tags: productRow.tags ?? [],
       imageUrl: productRow.imageurl ?? null,
@@ -426,7 +448,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Update product metadata (name, SKUs, category, tags, barcodes)
+// Update product metadata (name, SKUs, folder, category, tags, barcodes)
 export async function PUT(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
@@ -474,6 +496,30 @@ export async function PUT(request: NextRequest) {
       const raw = body.category;
       const value = typeof raw === 'string' ? raw.trim() : '';
       updates.category = value.length > 0 ? value : null;
+    }
+
+    if ('folderId' in body) {
+      if (body.folderId === null || body.folderId === '') {
+        updates.folderid = null;
+      } else if (typeof body.folderId === 'string' && isValidUUID(body.folderId)) {
+        const valid = await validateFolderOwnership({
+          supabase,
+          userId: user.id,
+          folderId: body.folderId,
+        });
+        if (!valid) {
+          return NextResponse.json(
+            { error: 'folderId must be a valid folder owned by the current user' },
+            { status: 400 },
+          );
+        }
+        updates.folderid = body.folderId;
+      } else {
+        return NextResponse.json(
+          { error: 'folderId must be a valid UUID or null' },
+          { status: 400 },
+        );
+      }
     }
 
     if (Array.isArray(body.barcodes)) {
@@ -589,6 +635,8 @@ export async function PUT(request: NextRequest) {
       .from('products')
       .update(updates)
       .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null)
       .select('*')
       .single();
 
@@ -608,6 +656,7 @@ export async function PUT(request: NextRequest) {
       barcodes: updatedRow.barcodes ?? [],
       aliases: updatedRow.aliases ?? [],
       supplierId: updatedRow.supplierid ?? null,
+      folderId: updatedRow.folderid ?? null,
       category: updatedRow.category ?? null,
       tags: updatedRow.tags ?? [],
       imageUrl: updatedRow.imageurl ?? null,
@@ -675,6 +724,7 @@ export async function POST(request: NextRequest) {
       aliases: toStringArray(body.aliases),
       supplierid: normalizeOptionalString(body.supplierId) || null,
       category: normalizeOptionalString(body.category),
+      folderid: null,
       tags: toStringArray(body.tags),
       imageurl: normalizeOptionalString(body.imageUrl),
       shopify_bound: !!body.shopifyBound,
@@ -731,6 +781,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if ('folderId' in body && body.folderId !== null && body.folderId !== '') {
+      if (typeof body.folderId !== 'string' || !isValidUUID(body.folderId)) {
+        return NextResponse.json(
+          { error: 'folderId must be a valid UUID or null' },
+          { status: 400 },
+        );
+      }
+      const valid = await validateFolderOwnership({
+        supabase,
+        userId: user.id,
+        folderId: body.folderId,
+      });
+      if (!valid) {
+        return NextResponse.json(
+          { error: 'folderId must be a valid folder owned by the current user' },
+          { status: 400 },
+        );
+      }
+      insertPayload.folderid = body.folderId;
+    }
+
     const { data: newProduct, error } = await supabase
       .from('products')
       .insert(insertPayload)
@@ -753,6 +824,7 @@ export async function POST(request: NextRequest) {
       barcodes: newProduct.barcodes ?? [],
       aliases: newProduct.aliases ?? [],
       supplierId: newProduct.supplierid ?? null,
+      folderId: newProduct.folderid ?? null,
       category: newProduct.category ?? null,
       tags: newProduct.tags ?? [],
       imageUrl: newProduct.imageurl ?? null,
@@ -798,6 +870,8 @@ export async function DELETE(request: NextRequest) {
       .from('products')
       .select('*')
       .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null)
       .single();
 
     if (fetchError || !product) {
@@ -807,18 +881,32 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const result = await deleteProductAndInventory(id);
+    const { error: deleteError } = await supabase
+      .from('products')
+      .update({
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null);
+
+    if (deleteError) {
+      console.error('Delete product error:', deleteError);
+      return NextResponse.json(
+        { error: 'Failed to move product to bin' },
+        { status: 500 }
+      );
+    }
 
     clearCache(`inventory_snapshot_v1_${user.id}`);
 
     return NextResponse.json({
       success: true,
-      message: 'Product deleted successfully',
+      message: 'Product moved to bin',
       deleted: {
         productId: id,
         productName: product.name,
-        inventoryRows: result.deletedInventoryCount,
-        transitRows: result.deletedTransitCount,
       },
     });
   } catch (error) {

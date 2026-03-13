@@ -93,6 +93,8 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
     const id = body?.id;
     const parentId = (body?.parentId as string | null | undefined) ?? null;
+    const hasParentId = 'parentId' in (body ?? {});
+    const name = 'name' in (body ?? {}) ? sanitizeString(body?.name, 200) : undefined;
 
     if (!isValidUUID(id)) {
       return NextResponse.json({ error: 'id must be a valid UUID' }, { status: 400 });
@@ -102,11 +104,44 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'parentId must be a valid UUID' }, { status: 400 });
     }
 
+    if (name !== undefined && !name) {
+      return NextResponse.json({ error: 'name is required (max 200 characters)' }, { status: 400 });
+    }
+
+    if (!hasParentId && name === undefined) {
+      return NextResponse.json({ error: 'At least one field must be provided' }, { status: 400 });
+    }
+
+    if (name) {
+      const { data: existing, error: existingError } = await supabase
+        .from('folders')
+        .select('id')
+        .eq('user_id', user.id)
+        .ilike('name', name)
+        .neq('id', id)
+        .maybeSingle();
+
+      if (existingError) {
+        console.error('Check duplicate folder error:', existingError);
+        return NextResponse.json({ error: 'Failed to validate folder name' }, { status: 500 });
+      }
+
+      if (existing) {
+        return NextResponse.json({ error: 'A folder with that name already exists' }, { status: 400 });
+      }
+    }
+
+    const updates: { parentid?: string | null; name?: string } = {};
+    if (hasParentId) {
+      updates.parentid = parentId;
+    }
+    if (name !== undefined) {
+      updates.name = name;
+    }
+
     const { data: folder, error } = await supabase
       .from('folders')
-      .update({
-        parentid: parentId,
-      })
+      .update(updates)
       .eq('id', id)
       .eq('user_id', user.id)
       .select('id, parentid, name, description, sort_order, created_at, updated_at')

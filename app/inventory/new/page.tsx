@@ -9,6 +9,10 @@ interface SupplierOption {
   name: string;
 }
 
+interface SuppliersResponse {
+  suppliers?: SupplierOption[];
+}
+
 interface NewProductForm {
   name: string;
   primarySku: string;
@@ -50,14 +54,9 @@ export default function NewProductPage() {
     const loadSuppliers = async () => {
       try {
         const res = await authenticatedFetch('/api/purchasing/po/view');
-        const json = await res.json().catch(() => null);
+        const json = (await res.json().catch(() => null)) as SuppliersResponse | null;
         if (!res.ok || !json || !Array.isArray(json.suppliers)) return;
-        setSuppliers(
-          json.suppliers.map((s: any) => ({
-            id: s.id,
-            name: s.name,
-          })),
-        );
+        setSuppliers(json.suppliers);
       } catch (err) {
         console.error('Failed to load suppliers for new product form', err);
       }

@@ -427,7 +427,7 @@ export default function ProductHistoryPage() {
 
     if (
       !window.confirm(
-        `Delete "${data.product.name}" from inventory? This will also remove any on-hand and in-transit records for this product.`,
+        `Move "${data.product.name}" to bin? You can empty it permanently from the bin page.`,
       )
     ) {
       return;
@@ -446,7 +446,7 @@ export default function ProductHistoryPage() {
 
       const json = await res.json();
       if (!res.ok || !json.success) {
-        throw new Error(json.error || 'Failed to delete product');
+        throw new Error(json.error || 'Failed to move product to bin');
       }
 
       router.push('/inventory');
@@ -1442,9 +1442,9 @@ export default function ProductHistoryPage() {
               onClick={handleDeleteProduct}
               disabled={deleting}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 text-sm"
-              aria-label={deleting ? 'Deleting product' : 'Delete product'}
+              aria-label={deleting ? 'Moving product to bin' : 'Move product to bin'}
             >
-              {deleting ? 'Deleting…' : 'Delete product'}
+              {deleting ? 'Moving…' : 'Move to bin'}
             </button>
           </div>
         </div>
