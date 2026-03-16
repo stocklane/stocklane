@@ -4,6 +4,12 @@ import { applyRateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 
+type UserSettingsRow = {
+  shopify_store_domain: string | null;
+  shopify_access_token: string | null;
+  shopify_connected_at: string | null;
+};
+
 // GET - Fetch account info and settings
 export async function GET(request: NextRequest) {
   try {
@@ -14,11 +20,12 @@ export async function GET(request: NextRequest) {
     if (blocked) return blocked;
 
     // Fetch user settings (Shopify config etc.)
-    const { data: settings } = await supabase
+    const { data } = await supabase
       .from('user_settings')
       .select('*')
       .eq('user_id', user.id)
       .single();
+    const settings = data as UserSettingsRow | null;
 
     return NextResponse.json({
       success: true,
