@@ -3,6 +3,17 @@ import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
 import { isValidUUID, sanitizeString } from '@/lib/validation';
 
+type FolderInsertRow = {
+  name: string;
+  parentid: string | null;
+  user_id: string;
+};
+
+type FolderUpdateRow = {
+  parentid?: string | null;
+  name?: string;
+};
+
 export async function GET(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
@@ -64,11 +75,13 @@ export async function POST(request: NextRequest) {
 
     const { data: folder, error } = await supabase
       .from('folders')
-      .insert({
-        name,
-        parentid: parentId,
-        user_id: user.id,
-      })
+      .insert(
+        {
+          name,
+          parentid: parentId,
+          user_id: user.id,
+        } as FolderInsertRow as never
+      )
       .select('id, parentid, name, description, sort_order, created_at, updated_at')
       .single();
 
@@ -131,7 +144,7 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
-    const updates: { parentid?: string | null; name?: string } = {};
+    const updates: FolderUpdateRow = {};
     if (hasParentId) {
       updates.parentid = parentId;
     }
@@ -141,7 +154,7 @@ export async function PATCH(request: NextRequest) {
 
     const { data: folder, error } = await supabase
       .from('folders')
-      .update(updates)
+      .update(updates as never)
       .eq('id', id)
       .eq('user_id', user.id)
       .select('id, parentid, name, description, sort_order, created_at, updated_at')

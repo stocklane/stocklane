@@ -22,10 +22,56 @@ interface ExistingProductRow {
   barcodes: string[] | null;
 }
 
+type ProductSelectRow = ExistingProductRow;
+
 interface ExistingSupplierRow {
   id: string;
   name: string;
 }
+
+type SupplierIdRow = {
+  id: string;
+};
+
+type SupplierInsertRow = {
+  name: string;
+  user_id: string;
+};
+
+type ProductInsertRow = {
+  name: string;
+  primarysku: string;
+  suppliersku: string | null;
+  barcodes: string[];
+  aliases: string[];
+  supplierid: string | null;
+  category: string | null;
+  tags: string[];
+  imageurl: null;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type InventoryUpdateRow = {
+  quantityonhand: number;
+  averagecostgbp: number;
+  lastupdated: string;
+};
+
+type InventoryInsertRow = {
+  productid: string;
+  quantityonhand: number;
+  averagecostgbp: number;
+  lastupdated: string;
+  user_id: string;
+};
+
+type InventorySelectRow = {
+  id: string;
+  quantityonhand: number | null;
+  averagecostgbp: number | null;
+};
 
 function generateInternalSku(usedSkuLower: Set<string>): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -103,14 +149,15 @@ export async function POST(request: NextRequest) {
       // Create new supplier
       const { data: newSupplier, error: supErr } = await supabase
         .from('suppliers')
-        .insert({ name, user_id: user.id })
+        .insert({ name, user_id: user.id } as SupplierInsertRow as never)
         .select('id')
         .single();
+      const createdSupplier = newSupplier as SupplierIdRow | null;
 
-      if (supErr || !newSupplier) return null;
+      if (supErr || !createdSupplier) return null;
 
-      supplierCache.set(key, newSupplier.id);
-      return newSupplier.id;
+      supplierCache.set(key, createdSupplier.id);
+      return createdSupplier.id;
     };
 
     const now = new Date().toISOString();
@@ -190,33 +237,35 @@ export async function POST(request: NextRequest) {
         }
 
         // Create new product
+        const newProductPayload: ProductInsertRow = {
+          name: rawName,
+          primarysku: resolvedPrimarySku,
+          suppliersku: supplierSku,
+          barcodes,
+          aliases: [],
+          supplierid: await resolveSupplier(supplierName),
+          category,
+          tags: [],
+          imageurl: null,
+          user_id: user.id,
+          created_at: now,
+          updated_at: now,
+        };
         const { data: newProduct, error: insertError } = await supabase
           .from('products')
-          .insert({
-            name: rawName,
-            primarysku: resolvedPrimarySku,
-            suppliersku: supplierSku,
-            barcodes,
-            aliases: [],
-            supplierid: await resolveSupplier(supplierName),
-            category,
-            tags: [],
-            imageurl: null,
-            user_id: user.id,
-            created_at: now,
-            updated_at: now,
-          })
+          .insert(newProductPayload as never)
           .select('id, name, primarysku, suppliersku, barcodes')
           .single();
+        const createdProduct = newProduct as ProductSelectRow | null;
 
-        if (insertError || !newProduct) {
+        if (insertError || !createdProduct) {
           errors.push(`Row ${i + 1} ("${rawName}"): Failed to create product - ${insertError?.message || 'Unknown error'}`);
           skipped++;
           continue;
         }
 
-        products.push(newProduct);
-        productId = newProduct.id;
+        products.push(createdProduct);
+        productId = createdProduct.id;
         created++;
       }
 
@@ -227,11 +276,12 @@ export async function POST(request: NextRequest) {
           .select('id, quantityonhand, averagecostgbp')
           .eq('productid', productId)
           .single();
+        const inventoryRow = existingInventory as InventorySelectRow | null;
 
-        if (existingInventory) {
+        if (inventoryRow) {
           // Weighted average merge: combine existing + imported
-          const existQty = Number(existingInventory.quantityonhand ?? 0);
-          const existCost = Number(existingInventory.averagecostgbp ?? 0);
+          const existQty = Number(inventoryRow.quantityonhand ?? 0);
+          const existCost = Number(inventoryRow.averagecostgbp ?? 0);
           const newQty = existQty + totalQuantity;
           const newCost = newQty > 0
             ? Number(((existQty * existCost + totalQuantity * averageCostGBP) / newQty).toFixed(4))
@@ -243,18 +293,19 @@ export async function POST(request: NextRequest) {
               quantityonhand: newQty,
               averagecostgbp: newCost,
               lastupdated: now,
-            })
-            .eq('id', existingInventory.id);
+            } as InventoryUpdateRow as never)
+            .eq('id', inventoryRow.id);
         } else {
+          const inventoryPayload: InventoryInsertRow = {
+            productid: productId,
+            quantityonhand: totalQuantity,
+            averagecostgbp: averageCostGBP,
+            lastupdated: now,
+            user_id: user.id,
+          };
           await supabase
             .from('inventory')
-            .insert({
-              productid: productId,
-              quantityonhand: totalQuantity,
-              averagecostgbp: averageCostGBP,
-              lastupdated: now,
-              user_id: user.id,
-            });
+            .insert(inventoryPayload as never);
         }
       }
     }

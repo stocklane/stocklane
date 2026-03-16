@@ -73,6 +73,29 @@ interface IntegrationRow {
   external_variant_id: string | null;
 }
 
+interface ProductRow {
+  id: string;
+  name: string;
+  primarysku: string | null;
+  suppliersku: string | null;
+  barcodes: string[] | null;
+  aliases: string[] | null;
+  supplierid: string | null;
+  folderid: string | null;
+  category: string | null;
+  tags: string[] | null;
+  imageurl: string | null;
+  shopify_bound: boolean | null;
+  pricing_greenlight: boolean | null;
+  target_margin: number | string | null;
+  pricing_sales_tax_pct: number | string | null;
+  pricing_shopify_fee_pct: number | string | null;
+  pricing_postage_packaging_gbp: number | string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+}
+
 interface ProductUpdatePayload {
   name?: string;
   primarysku?: string | null;
@@ -134,8 +157,9 @@ async function ensureUniquePrimarySkuForUser(params: {
   }
 
   const { data: conflict } = await query.maybeSingle();
-  if (conflict) {
-    return conflict.name || conflict.primarysku || primarySku;
+  const conflictRow = conflict as Pick<ProductRow, 'name' | 'primarysku'> | null;
+  if (conflictRow) {
+    return conflictRow.name || conflictRow.primarysku || primarySku;
   }
 
   return null;
@@ -184,8 +208,9 @@ export async function GET(request: NextRequest) {
       .eq('user_id', user.id)
       .is('deleted_at', null)
       .single();
+    const selectedProduct = productRow as ProductRow | null;
 
-    if (productError || !productRow) {
+    if (productError || !selectedProduct) {
       return NextResponse.json(
         { error: 'Product not found' },
         { status: 404 }
@@ -197,8 +222,8 @@ export async function GET(request: NextRequest) {
     const [inventoryRes, supplierRes, transitRes, poLinesRes, purchaseOrdersRes, invoicesRes, integrationsRes] =
       await Promise.all([
         supabase.from('inventory').select('*').eq('productid', id),
-        productRow.supplierid
-          ? supabase.from('suppliers').select('*').eq('id', productRow.supplierid).single()
+        selectedProduct.supplierid
+          ? supabase.from('suppliers').select('*').eq('id', selectedProduct.supplierid).single()
           : Promise.resolve(emptySupplierResponse),
         supabase.from('transit').select('*').eq('productid', id),
         supabase.from('polines').select('*'),
@@ -227,25 +252,25 @@ export async function GET(request: NextRequest) {
 
     // Map product to camelCase DTO
     const product = {
-      id: productRow.id,
-      name: productRow.name,
-      primarySku: productRow.primarysku ?? null,
-      supplierSku: productRow.suppliersku ?? null,
-      barcodes: productRow.barcodes ?? [],
-      aliases: productRow.aliases ?? [],
-      supplierId: productRow.supplierid ?? null,
-      folderId: productRow.folderid ?? null,
-      category: productRow.category ?? null,
-      tags: productRow.tags ?? [],
-      imageUrl: productRow.imageurl ?? null,
-      shopifyBound: !!productRow.shopify_bound,
-      pricingGreenlight: !!productRow.pricing_greenlight,
-      targetMargin: productRow.target_margin != null ? Number(productRow.target_margin) : null,
-      pricingSalesTaxPct: Number(productRow.pricing_sales_tax_pct ?? 0),
-      pricingShopifyFeePct: Number(productRow.pricing_shopify_fee_pct ?? 0),
-      pricingPostagePackagingGbp: Number(productRow.pricing_postage_packaging_gbp ?? 0),
-      createdAt: productRow.created_at,
-      updatedAt: productRow.updated_at,
+      id: selectedProduct.id,
+      name: selectedProduct.name,
+      primarySku: selectedProduct.primarysku ?? null,
+      supplierSku: selectedProduct.suppliersku ?? null,
+      barcodes: selectedProduct.barcodes ?? [],
+      aliases: selectedProduct.aliases ?? [],
+      supplierId: selectedProduct.supplierid ?? null,
+      folderId: selectedProduct.folderid ?? null,
+      category: selectedProduct.category ?? null,
+      tags: selectedProduct.tags ?? [],
+      imageUrl: selectedProduct.imageurl ?? null,
+      shopifyBound: !!selectedProduct.shopify_bound,
+      pricingGreenlight: !!selectedProduct.pricing_greenlight,
+      targetMargin: selectedProduct.target_margin != null ? Number(selectedProduct.target_margin) : null,
+      pricingSalesTaxPct: Number(selectedProduct.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(selectedProduct.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(selectedProduct.pricing_postage_packaging_gbp ?? 0),
+      createdAt: selectedProduct.created_at,
+      updatedAt: selectedProduct.updated_at,
     };
 
     let inventory =
@@ -633,14 +658,15 @@ export async function PUT(request: NextRequest) {
 
     const { data: updatedRow, error } = await supabase
       .from('products')
-      .update(updates)
+      .update(updates as never)
       .eq('id', id)
       .eq('user_id', user.id)
       .is('deleted_at', null)
       .select('*')
       .single();
+    const updatedProduct = updatedRow as ProductRow | null;
 
-    if (error || !updatedRow) {
+    if (error || !updatedProduct) {
       console.error('Update product error:', error);
       return NextResponse.json(
         { error: 'Failed to update product' },
@@ -649,25 +675,25 @@ export async function PUT(request: NextRequest) {
     }
 
     const product = {
-      id: updatedRow.id,
-      name: updatedRow.name,
-      primarySku: updatedRow.primarysku ?? null,
-      supplierSku: updatedRow.suppliersku ?? null,
-      barcodes: updatedRow.barcodes ?? [],
-      aliases: updatedRow.aliases ?? [],
-      supplierId: updatedRow.supplierid ?? null,
-      folderId: updatedRow.folderid ?? null,
-      category: updatedRow.category ?? null,
-      tags: updatedRow.tags ?? [],
-      imageUrl: updatedRow.imageurl ?? null,
-      shopifyBound: !!updatedRow.shopify_bound,
-      pricingGreenlight: !!updatedRow.pricing_greenlight,
-      targetMargin: updatedRow.target_margin != null ? Number(updatedRow.target_margin) : null,
-      pricingSalesTaxPct: Number(updatedRow.pricing_sales_tax_pct ?? 0),
-      pricingShopifyFeePct: Number(updatedRow.pricing_shopify_fee_pct ?? 0),
-      pricingPostagePackagingGbp: Number(updatedRow.pricing_postage_packaging_gbp ?? 0),
-      createdAt: updatedRow.created_at,
-      updatedAt: updatedRow.updated_at,
+      id: updatedProduct.id,
+      name: updatedProduct.name,
+      primarySku: updatedProduct.primarysku ?? null,
+      supplierSku: updatedProduct.suppliersku ?? null,
+      barcodes: updatedProduct.barcodes ?? [],
+      aliases: updatedProduct.aliases ?? [],
+      supplierId: updatedProduct.supplierid ?? null,
+      folderId: updatedProduct.folderid ?? null,
+      category: updatedProduct.category ?? null,
+      tags: updatedProduct.tags ?? [],
+      imageUrl: updatedProduct.imageurl ?? null,
+      shopifyBound: !!updatedProduct.shopify_bound,
+      pricingGreenlight: !!updatedProduct.pricing_greenlight,
+      targetMargin: updatedProduct.target_margin != null ? Number(updatedProduct.target_margin) : null,
+      pricingSalesTaxPct: Number(updatedProduct.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(updatedProduct.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(updatedProduct.pricing_postage_packaging_gbp ?? 0),
+      createdAt: updatedProduct.created_at,
+      updatedAt: updatedProduct.updated_at,
     }
 
     clearCache(`inventory_snapshot_v1_${user.id}`);
@@ -804,11 +830,12 @@ export async function POST(request: NextRequest) {
 
     const { data: newProduct, error } = await supabase
       .from('products')
-      .insert(insertPayload)
+      .insert(insertPayload as never)
       .select('*')
       .single();
+    const createdProduct = newProduct as ProductRow | null;
 
-    if (error || !newProduct) {
+    if (error || !createdProduct) {
       console.error('Create product error:', error);
       return NextResponse.json(
         { error: 'Failed to create product' },
@@ -817,25 +844,25 @@ export async function POST(request: NextRequest) {
     }
 
     const product = {
-      id: newProduct.id,
-      name: newProduct.name,
-      primarySku: newProduct.primarysku ?? null,
-      supplierSku: newProduct.suppliersku ?? null,
-      barcodes: newProduct.barcodes ?? [],
-      aliases: newProduct.aliases ?? [],
-      supplierId: newProduct.supplierid ?? null,
-      folderId: newProduct.folderid ?? null,
-      category: newProduct.category ?? null,
-      tags: newProduct.tags ?? [],
-      imageUrl: newProduct.imageurl ?? null,
-      shopifyBound: !!newProduct.shopify_bound,
-      pricingGreenlight: !!newProduct.pricing_greenlight,
-      targetMargin: newProduct.target_margin != null ? Number(newProduct.target_margin) : null,
-      pricingSalesTaxPct: Number(newProduct.pricing_sales_tax_pct ?? 0),
-      pricingShopifyFeePct: Number(newProduct.pricing_shopify_fee_pct ?? 0),
-      pricingPostagePackagingGbp: Number(newProduct.pricing_postage_packaging_gbp ?? 0),
-      createdAt: newProduct.created_at,
-      updatedAt: newProduct.updated_at,
+      id: createdProduct.id,
+      name: createdProduct.name,
+      primarySku: createdProduct.primarysku ?? null,
+      supplierSku: createdProduct.suppliersku ?? null,
+      barcodes: createdProduct.barcodes ?? [],
+      aliases: createdProduct.aliases ?? [],
+      supplierId: createdProduct.supplierid ?? null,
+      folderId: createdProduct.folderid ?? null,
+      category: createdProduct.category ?? null,
+      tags: createdProduct.tags ?? [],
+      imageUrl: createdProduct.imageurl ?? null,
+      shopifyBound: !!createdProduct.shopify_bound,
+      pricingGreenlight: !!createdProduct.pricing_greenlight,
+      targetMargin: createdProduct.target_margin != null ? Number(createdProduct.target_margin) : null,
+      pricingSalesTaxPct: Number(createdProduct.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(createdProduct.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(createdProduct.pricing_postage_packaging_gbp ?? 0),
+      createdAt: createdProduct.created_at,
+      updatedAt: createdProduct.updated_at,
     };
 
     clearCache(`inventory_snapshot_v1_${user.id}`);
