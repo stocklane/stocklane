@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-let supabaseInstance: ReturnType<typeof createClient> | null = null;
+let supabaseInstance: any = null;
 
 function createBrowserSupabase() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -30,8 +30,8 @@ function getBrowserSupabaseClient() {
 }
 
 // Keep a stable export shape while deferring env validation until runtime use.
-export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
+export const supabase = new Proxy({} as any, {
   get(_target, prop, receiver) {
     return Reflect.get(getBrowserSupabaseClient(), prop, receiver);
   },
-});
+}) as any;

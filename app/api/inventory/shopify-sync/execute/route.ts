@@ -25,10 +25,63 @@ interface SupplierRow {
   name: string;
 }
 
+interface SupplierIdRow {
+  id: string;
+}
+
 interface ProductSkuRow {
   primarysku: string | null;
   suppliersku: string | null;
 }
+
+interface ProductIdRow {
+  id: string;
+}
+
+interface InventoryRow {
+  id: string;
+  quantityonhand: number | null;
+}
+
+type SupplierInsertRow = {
+  name: string;
+  user_id: string;
+};
+
+type ProductInsertRow = {
+  name: string;
+  primarysku: string;
+  barcodes: string[];
+  aliases: string[];
+  supplierid: string | null;
+  category: string | null;
+  tags: string[];
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type InventoryUpdateRow = {
+  quantityonhand: number;
+  lastupdated: string;
+};
+
+type InventoryInsertRow = {
+  productid: string;
+  quantityonhand: number;
+  averagecostgbp: number;
+  lastupdated: string;
+  user_id: string;
+};
+
+type ProductIntegrationUpsertRow = {
+  user_id: string;
+  product_id: string;
+  platform: string;
+  external_product_id: string;
+  external_variant_id: string;
+  external_inventory_item_id: string | null;
+};
 
 function generateInternalSku(usedSkuLower: Set<string>): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -97,13 +150,14 @@ export async function POST(request: NextRequest) {
 
       const { data: newSupplier, error: supErr } = await supabase
         .from('suppliers')
-        .insert({ name, user_id: user.id })
+        .insert({ name, user_id: user.id } as SupplierInsertRow as never)
         .select('id')
         .single();
+      const createdSupplier = newSupplier as SupplierIdRow | null;
 
-      if (supErr || !newSupplier) return null;
-      supplierCache.set(key, newSupplier.id);
-      return newSupplier.id;
+      if (supErr || !createdSupplier) return null;
+      supplierCache.set(key, createdSupplier.id);
+      return createdSupplier.id;
     };
 
     const now = new Date().toISOString();
@@ -139,29 +193,31 @@ export async function POST(request: NextRequest) {
         }
         const resolvedPrimarySku = providedSku || generateInternalSku(usedSkuLower);
         usedSkuLower.add(resolvedPrimarySku.toLowerCase());
+        const productPayload: ProductInsertRow = {
+          name: v.title,
+          primarysku: resolvedPrimarySku,
+          barcodes,
+          aliases: [],
+          supplierid: await resolveSupplier(v.vendor),
+          category: v.category,
+          tags: [],
+          user_id: user.id,
+          created_at: now,
+          updated_at: now,
+        };
         const { data: newDbProduct, error: insertError } = await supabase
           .from('products')
-          .insert({
-            name: v.title,
-            primarysku: resolvedPrimarySku,
-            barcodes,
-            aliases: [],
-            supplierid: await resolveSupplier(v.vendor),
-            category: v.category,
-            tags: [],
-            user_id: user.id,
-            created_at: now,
-            updated_at: now,
-          })
+          .insert(productPayload as never)
           .select('id')
           .single();
+        const createdProduct = newDbProduct as ProductIdRow | null;
 
-        if (insertError || !newDbProduct) {
+        if (insertError || !createdProduct) {
           errors.push(`Failed to create product "${v.title}": ${insertError?.message || 'Unknown'}`);
           failed++;
           continue;
         }
-        productId = newDbProduct.id;
+        productId = createdProduct.id;
         created++;
       } else {
         ignored++;
@@ -174,37 +230,40 @@ export async function POST(request: NextRequest) {
         .select('id, quantityonhand')
         .eq('productid', productId)
         .single();
+      const inventoryRow = existingInventory as InventoryRow | null;
 
-      if (existingInventory) {
-        if (existingInventory.quantityonhand !== v.quantity) {
+      if (inventoryRow) {
+        if (inventoryRow.quantityonhand !== v.quantity) {
           await supabase
             .from('inventory')
-            .update({ quantityonhand: v.quantity, lastupdated: now })
-            .eq('id', existingInventory.id);
+            .update({ quantityonhand: v.quantity, lastupdated: now } as InventoryUpdateRow as never)
+            .eq('id', inventoryRow.id);
         }
       } else {
+        const inventoryPayload: InventoryInsertRow = {
+          productid: productId,
+          quantityonhand: v.quantity,
+          averagecostgbp: 0,
+          lastupdated: now,
+          user_id: user.id,
+        };
         await supabase
           .from('inventory')
-          .insert({
-            productid: productId,
-            quantityonhand: v.quantity,
-            averagecostgbp: 0,
-            lastupdated: now,
-            user_id: user.id,
-          });
+          .insert(inventoryPayload as never);
       }
 
       // Upsert Integrations
+      const integrationPayload: ProductIntegrationUpsertRow = {
+        user_id: user.id,
+        product_id: productId,
+        platform: 'shopify',
+        external_product_id: v.shopifyProductId,
+        external_variant_id: v.shopifyVariantId,
+        external_inventory_item_id: v.inventoryItemId || null,
+      };
       await supabase
         .from('product_integrations')
-        .upsert({
-          user_id: user.id,
-          product_id: productId,
-          platform: 'shopify',
-          external_product_id: v.shopifyProductId,
-          external_variant_id: v.shopifyVariantId,
-          external_inventory_item_id: v.inventoryItemId || null,
-        }, { onConflict: 'user_id,platform,external_product_id,external_variant_id' });
+        .upsert(integrationPayload as never, { onConflict: 'user_id,platform,external_product_id,external_variant_id' });
     }
 
     return NextResponse.json({

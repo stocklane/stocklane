@@ -31,6 +31,11 @@ interface ProductRow {
   barcodes: string[] | null;
 }
 
+interface UserSettingsRow {
+  shopify_store_domain: string | null;
+  shopify_access_token: string | null;
+}
+
 interface MatchableProductRow {
   id: string;
   name: string;
@@ -101,12 +106,13 @@ export async function POST(request: NextRequest) {
       .select('shopify_store_domain, shopify_access_token')
       .eq('user_id', user.id)
       .single();
+    const userSettings = settings as UserSettingsRow | null;
 
-    if (!settings?.shopify_store_domain || !settings?.shopify_access_token) {
+    if (!userSettings?.shopify_store_domain || !userSettings?.shopify_access_token) {
       return NextResponse.json({ error: 'Shopify account not connected.' }, { status: 400 });
     }
 
-    const { shopify_store_domain: domain, shopify_access_token: token } = settings;
+    const { shopify_store_domain: domain, shopify_access_token: token } = userSettings;
     const shopifyHeaders = { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' };
 
     const graphqlQuery = `query getProducts($cursor: String) {
