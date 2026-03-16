@@ -10,6 +10,11 @@ type UserSettingsRow = {
   shopify_connected_at: string | null;
 };
 
+type UserSettingsWriteRow = UserSettingsRow & {
+  user_id: string;
+  updated_at: string;
+};
+
 // GET - Fetch account info and settings
 export async function GET(request: NextRequest) {
   try {
@@ -126,18 +131,16 @@ export async function PUT(request: NextRequest) {
 
       // Upsert settings
       const now = new Date().toISOString();
+      const settingsPayload: UserSettingsWriteRow = {
+        user_id: user.id,
+        shopify_store_domain: normalizedDomain,
+        shopify_access_token: accessToken,
+        shopify_connected_at: now,
+        updated_at: now,
+      };
       const { error } = await supabase
         .from('user_settings')
-        .upsert(
-          {
-            user_id: user.id,
-            shopify_store_domain: normalizedDomain,
-            shopify_access_token: accessToken,
-            shopify_connected_at: now,
-            updated_at: now,
-          },
-          { onConflict: 'user_id' }
-        );
+        .upsert(settingsPayload as never, { onConflict: 'user_id' });
 
       if (error) {
         console.error('Save Shopify settings error:', error);
@@ -161,18 +164,16 @@ export async function PUT(request: NextRequest) {
     // Handle Shopify disconnect
     if (action === 'disconnect_shopify') {
       const now = new Date().toISOString();
+      const settingsPayload: UserSettingsWriteRow = {
+        user_id: user.id,
+        shopify_store_domain: null,
+        shopify_access_token: null,
+        shopify_connected_at: null,
+        updated_at: now,
+      };
       const { error } = await supabase
         .from('user_settings')
-        .upsert(
-          {
-            user_id: user.id,
-            shopify_store_domain: null,
-            shopify_access_token: null,
-            shopify_connected_at: null,
-            updated_at: now,
-          },
-          { onConflict: 'user_id' }
-        );
+        .upsert(settingsPayload as never, { onConflict: 'user_id' });
 
       if (error) {
         console.error('Disconnect Shopify error:', error);
