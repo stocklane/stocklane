@@ -113,6 +113,7 @@ interface ProductUpdatePayload {
   pricing_shopify_fee_pct?: number;
   pricing_postage_packaging_gbp?: number;
   updated_at?: string;
+  deleted_at?: string | null;
 }
 
 interface ProductInsertPayload {
@@ -900,8 +901,9 @@ export async function DELETE(request: NextRequest) {
       .eq('user_id', user.id)
       .is('deleted_at', null)
       .single();
+    const selectedProduct = product as Pick<ProductRow, 'name'> | null;
 
-    if (fetchError || !product) {
+    if (fetchError || !selectedProduct) {
       return NextResponse.json(
         { error: 'Product not found' },
         { status: 404 }
@@ -913,7 +915,7 @@ export async function DELETE(request: NextRequest) {
       .update({
         deleted_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      })
+      } as ProductUpdatePayload as never)
       .eq('id', id)
       .eq('user_id', user.id)
       .is('deleted_at', null);
@@ -933,7 +935,7 @@ export async function DELETE(request: NextRequest) {
       message: 'Product moved to bin',
       deleted: {
         productId: id,
-        productName: product.name,
+        productName: selectedProduct.name,
       },
     });
   } catch (error) {
