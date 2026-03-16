@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme, type ThemePreference } from '@/contexts/ThemeContext';
 import { authenticatedFetch } from '@/lib/api-client';
@@ -303,6 +304,13 @@ export default function AccountPage() {
             >
               {shopifySaving ? 'Disconnecting...' : 'Disconnect Shopify'}
             </button>
+            <Link
+              href="/inventory/shopify-sync"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-white dark:bg-stone-900 text-stone-700 dark:text-stone-300 text-sm font-medium rounded-lg hover:bg-stone-50 dark:hover:bg-stone-700 transition-colors border border-stone-300 dark:border-stone-600"
+            >
+              <img src="/Shopify_icon.svg" alt="Shopify" className="w-4 h-4" />
+              Open Shopify sync
+            </Link>
           </div>
         ) : (
           <form onSubmit={handleConnectShopify} className="space-y-4">

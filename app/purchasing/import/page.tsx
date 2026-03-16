@@ -42,6 +42,43 @@ interface ExtractedData {
   notes?: string;
 }
 
+type MatchType =
+  | 'exact_primary_sku'
+  | 'exact_supplier_sku'
+  | 'exact_barcode'
+  | 'exact_name'
+  | 'alias'
+  | 'fuzzy_name';
+
+interface ProductOption {
+  id: string;
+  name: string;
+  primarySku: string | null;
+  supplierSku: string | null;
+}
+
+interface LineMatchSuggestion {
+  productId: string;
+  productName: string;
+  primarySku: string | null;
+  supplierSku: string | null;
+  matchType: MatchType;
+  confidence: number;
+  reason: string;
+}
+
+interface LineMatchResult {
+  suggestions: LineMatchSuggestion[];
+  suggestedProductId: string | null;
+}
+
+interface LineReviewState {
+  action: 'link' | 'create';
+  targetProductId: string | null;
+  reviewed: boolean;
+  shopifyBound: boolean;
+}
+
 interface DuplicateMatch {
   id: string;
   invoiceNumber: string | null;
@@ -57,6 +94,8 @@ interface GroupResult {
   group: FileGroup;
   status: 'pending' | 'processing' | 'extracted' | 'approved' | 'success' | 'cancelled' | 'error';
   extractedData?: ExtractedData;
+  lineMatches?: LineMatchResult[];
+  productOptions?: ProductOption[];
   error?: string;
   duplicates?: DuplicateMatch[];
   duplicatesChecked?: boolean;
@@ -76,8 +115,9 @@ function ImportPageContent() {
   const [isDragging, setIsDragging] = useState(false);
   const [draggedFile, setDraggedFile] = useState<{ groupId: string; fileIndex: number } | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
-  const [editedData, setEditedData] = useState<{ [key: number]: ExtractedData }>({});
-  const [savingIndex, setSavingIndex] = useState<number | null>(null);
+  const [editedData, setEditedData] = useState<Record<string, ExtractedData>>({});
+  const [lineReviews, setLineReviews] = useState<Record<string, LineReviewState[]>>({});
+  const [savingGroupId, setSavingGroupId] = useState<string | null>(null);
   const [dismissedDuplicates, setDismissedDuplicates] = useState<Set<string>>(new Set());
   const [manualError, setManualError] = useState<string | null>(null);
   const [manualSaving, setManualSaving] = useState(false);
@@ -88,13 +128,84 @@ function ImportPageContent() {
     router.push('/purchasing/view');
   };
 
-  const createNewGroup = (files: File[]) => {
-    const newGroup: FileGroup = {
-      id: crypto.randomUUID(),
-      name: `Group ${fileGroups.length + 1}`,
-      files: files,
-    };
-    setFileGroups(prev => [...prev, newGroup]);
+  const getMatchLabel = (matchType: MatchType) => {
+    switch (matchType) {
+      case 'exact_primary_sku':
+        return 'Exact StockLane SKU';
+      case 'exact_supplier_sku':
+        return 'Exact supplier SKU';
+      case 'exact_barcode':
+        return 'Exact barcode';
+      case 'exact_name':
+        return 'Exact name';
+      case 'alias':
+        return 'Alias';
+      case 'fuzzy_name':
+        return 'Fuzzy name';
+      default:
+        return 'Suggested';
+    }
+  };
+
+  const getLiveTopSuggestion = (
+    line: ExtractedData['poLines'][number],
+    originalMatch: LineMatchResult | undefined,
+    productOptions: ProductOption[] | undefined,
+  ): LineMatchSuggestion | null => {
+    const description = line.description.trim().toLowerCase();
+    const supplierSku = (line.supplierSku || '').trim().toLowerCase();
+    const options = productOptions || [];
+
+    if (supplierSku) {
+      const exactPrimarySku = options.find(
+        (product) => (product.primarySku || '').trim().toLowerCase() === supplierSku,
+      );
+      if (exactPrimarySku) {
+        return {
+          productId: exactPrimarySku.id,
+          productName: exactPrimarySku.name,
+          primarySku: exactPrimarySku.primarySku,
+          supplierSku: exactPrimarySku.supplierSku,
+          matchType: 'exact_primary_sku',
+          confidence: 1,
+          reason: `Exact StockLane SKU match on ${line.supplierSku}`,
+        };
+      }
+
+      const exactSupplierSku = options.find(
+        (product) => (product.supplierSku || '').trim().toLowerCase() === supplierSku,
+      );
+      if (exactSupplierSku) {
+        return {
+          productId: exactSupplierSku.id,
+          productName: exactSupplierSku.name,
+          primarySku: exactSupplierSku.primarySku,
+          supplierSku: exactSupplierSku.supplierSku,
+          matchType: 'exact_supplier_sku',
+          confidence: 1,
+          reason: `Exact supplier SKU match on ${line.supplierSku}`,
+        };
+      }
+    }
+
+    if (description) {
+      const exactName = options.find(
+        (product) => product.name.trim().toLowerCase() === description,
+      );
+      if (exactName) {
+        return {
+          productId: exactName.id,
+          productName: exactName.name,
+          primarySku: exactName.primarySku,
+          supplierSku: exactName.supplierSku,
+          matchType: 'exact_name',
+          confidence: 0.95,
+          reason: `Exact name match on ${line.description}`,
+        };
+      }
+    }
+
+    return originalMatch?.suggestions?.[0] || null;
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -182,7 +293,7 @@ function ImportPageContent() {
 
       if (sourceGroup && targetGroup && sourceGroup.files[draggedFile.fileIndex]) {
         const movedFile = sourceGroup.files[draggedFile.fileIndex];
-        
+
         // Create new groups array with updated files
         const updatedGroups = prev.map(group => {
           if (group.id === draggedFile.groupId) {
@@ -212,6 +323,7 @@ function ImportPageContent() {
   };
 
   const handleRemoveFile = (groupId: string, fileIndex: number) => {
+    let removedGroup = false;
     setFileGroups(prev => {
       const newGroups = prev.map(group => {
         if (group.id === groupId) {
@@ -223,8 +335,24 @@ function ImportPageContent() {
         return group;
       });
       // Remove empty groups
-      return newGroups.filter(g => g.files.length > 0);
+      const filteredGroups = newGroups.filter(g => g.files.length > 0);
+      removedGroup = !filteredGroups.some((group) => group.id === groupId);
+      return filteredGroups;
     });
+
+    if (removedGroup) {
+      setGroupResults((prev) => prev.filter((result) => result.group.id !== groupId));
+      setEditedData((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      setLineReviews((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+    }
   };
 
   const handleRenameGroup = (groupId: string, newName: string) => {
@@ -235,23 +363,92 @@ function ImportPageContent() {
     );
   };
 
-  const handleDeleteGroup = (groupId: string) => {
-    setFileGroups(prev => prev.filter(group => group.id !== groupId));
-  };
-
   const handleDeleteResult = (groupId: string) => {
     setGroupResults(prev =>
       prev.map((result) =>
         result.group.id === groupId ? { ...result, status: 'cancelled' as const } : result
       )
     );
+    setEditedData((prev) => {
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+    setLineReviews((prev) => {
+      const next = { ...prev };
+      delete next[groupId];
+      return next;
+    });
+  };
+
+  const getLineReviews = (groupId: string): LineReviewState[] => lineReviews[groupId] || [];
+
+  const updateLineReview = (
+    groupId: string,
+    lineIndex: number,
+    updates: Partial<LineReviewState>,
+  ) => {
+    setLineReviews((prev) => {
+      const current = prev[groupId] || [];
+      const next = [...current];
+      const existing = next[lineIndex] || {
+        action: 'create' as const,
+        targetProductId: null,
+        reviewed: false,
+        shopifyBound: false,
+      };
+      next[lineIndex] = { ...existing, ...updates };
+      return { ...prev, [groupId]: next };
+    });
+  };
+
+  const confirmLineReview = (groupId: string, lineIndex: number) => {
+    updateLineReview(groupId, lineIndex, { reviewed: true });
+  };
+
+  const acceptSuggestedMatches = (groupId: string) => {
+    const result = groupResults.find((entry) => entry.group.id === groupId);
+    if (!result?.lineMatches) return;
+
+    setLineReviews((prev) => {
+      const current = [...(prev[groupId] || [])];
+      result.lineMatches!.forEach((match, index) => {
+        if (!match.suggestedProductId) return;
+        current[index] = {
+          action: 'link',
+          targetProductId: match.suggestedProductId,
+          reviewed: true,
+          shopifyBound: current[index]?.shopifyBound || false,
+        };
+      });
+      return { ...prev, [groupId]: current };
+    });
+  };
+
+  const createAllUnmatched = (groupId: string) => {
+    const result = groupResults.find((entry) => entry.group.id === groupId);
+    if (!result?.extractedData) return;
+
+    setLineReviews((prev) => {
+      const current = [...(prev[groupId] || [])];
+      result.extractedData!.poLines.forEach((_, index) => {
+        if (current[index]?.targetProductId) return;
+        current[index] = {
+          action: 'create',
+          targetProductId: null,
+          reviewed: true,
+          shopifyBound: current[index]?.shopifyBound || false,
+        };
+      });
+      return { ...prev, [groupId]: current };
+    });
   };
 
   const handleSavePurchaseOrder = async (groupId: string) => {
     const resultIndex = groupResults.findIndex(r => r.group.id === groupId);
     if (resultIndex === -1) return;
-    
-    const data = getEditableData(resultIndex);
+
+    const data = getEditableData(groupId);
     if (!data) return;
 
     // Validate required fields
@@ -265,7 +462,22 @@ function ImportPageContent() {
       return;
     }
 
-    setSavingIndex(resultIndex);
+    const reviews = getLineReviews(groupId);
+    const invalidReviewIndex = data.poLines.findIndex((_, index) => {
+      const review = reviews[index];
+      if (!review?.reviewed) return true;
+      if (review.action === 'link') {
+        return !review.targetProductId;
+      }
+      return false;
+    });
+
+    if (invalidReviewIndex !== -1) {
+      alert(`Review line ${invalidReviewIndex + 1} before saving.`);
+      return;
+    }
+
+    setSavingGroupId(groupId);
 
     try {
       // Get the files for this group
@@ -274,7 +486,18 @@ function ImportPageContent() {
 
       // Create FormData to include both data and files
       const formData = new FormData();
-      formData.append('data', JSON.stringify(data));
+      const payload = {
+        ...data,
+        poLines: data.poLines.map((line, index) => ({
+          ...line,
+          reviewDecision: {
+            action: reviews[index].action,
+            targetProductId: reviews[index].targetProductId,
+            shopifyBound: reviews[index].shopifyBound,
+          },
+        })),
+      };
+      formData.append('data', JSON.stringify(payload));
       formData.append('fileCount', files.length.toString());
       files.forEach((file, index) => {
         formData.append(`file${index}`, file);
@@ -294,21 +517,31 @@ function ImportPageContent() {
       // Show success message
       const supplierName = data.supplier.name;
       setSuccessMessage(`Purchase order for ${supplierName} saved successfully!`);
-      
+
       // Remove the file group and result after successful save
       setFileGroups(prev => prev.filter(g => g.id !== groupId));
       setGroupResults(prev => prev.filter(r => r.group.id !== groupId));
-      
+      setEditedData((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      setLineReviews((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+
       // Auto-hide success message after 5 seconds
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to save purchase order');
     } finally {
-      setSavingIndex(null);
+      setSavingGroupId(null);
     }
   };
 
-  const handleManualSubmit = async (data: any) => {
+  const handleManualSubmit = async (data: ExtractedData) => {
     setManualError(null);
 
     if (!data?.supplier?.name) {
@@ -349,38 +582,42 @@ function ImportPageContent() {
     }
   };
 
-  const getEditableData = (index: number): ExtractedData | undefined => {
-    return editedData[index] || groupResults[index]?.extractedData;
+  const getEditableData = (groupId: string): ExtractedData | undefined => {
+    return editedData[groupId] || groupResults.find((result) => result.group.id === groupId)?.extractedData;
   };
 
-  const updateField = (resultIndex: number, field: string, value: any) => {
-    const currentData = getEditableData(resultIndex);
+  const updateField = (groupId: string, field: string, value: unknown) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const keys = field.split('.');
     const updated = JSON.parse(JSON.stringify(currentData));
-    
-    let obj: any = updated;
+
+    let obj: Record<string, unknown> = updated as Record<string, unknown>;
     for (let i = 0; i < keys.length - 1; i++) {
-      obj = obj[keys[i]];
+      obj = obj[keys[i]] as Record<string, unknown>;
     }
     obj[keys[keys.length - 1]] = value;
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
   };
 
-  const updateLineItem = (resultIndex: number, lineIndex: number, field: string, value: any) => {
-    const currentData = getEditableData(resultIndex);
+  const updateLineItem = (groupId: string, lineIndex: number, field: string, value: unknown) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const updated = JSON.parse(JSON.stringify(currentData));
     updated.poLines[lineIndex][field] = value;
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
+
+    if (field === 'description' || field === 'supplierSku') {
+      updateLineReview(groupId, lineIndex, { reviewed: false });
+    }
   };
 
-  const addLineItem = (resultIndex: number) => {
-    const currentData = getEditableData(resultIndex);
+  const addLineItem = (groupId: string) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const updated = JSON.parse(JSON.stringify(currentData));
@@ -393,21 +630,50 @@ function ImportPageContent() {
       rrp: null,
     });
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
+
+    setLineReviews((prev) => ({
+      ...prev,
+      [groupId]: [
+        ...(prev[groupId] || []),
+        {
+          action: 'create',
+          targetProductId: null,
+          reviewed: false,
+          shopifyBound: false,
+        },
+      ],
+    }));
   };
 
-  const removeLineItem = (resultIndex: number, lineIndex: number) => {
-    const currentData = getEditableData(resultIndex);
+  const removeLineItem = (groupId: string, lineIndex: number) => {
+    const currentData = getEditableData(groupId);
     if (!currentData) return;
 
     const updated = JSON.parse(JSON.stringify(currentData));
     updated.poLines.splice(lineIndex, 1);
 
-    setEditedData(prev => ({ ...prev, [resultIndex]: updated }));
+    setEditedData(prev => ({ ...prev, [groupId]: updated }));
+
+    setLineReviews((prev) => ({
+      ...prev,
+      [groupId]: (prev[groupId] || []).filter((_, idx) => idx !== lineIndex),
+    }));
   };
 
   // Extract analysis logic into reusable function
   const analyzeGroup = async (groupIndex: number, group: FileGroup) => {
+    setEditedData((prev) => {
+      const next = { ...prev };
+      delete next[group.id];
+      return next;
+    });
+    setLineReviews((prev) => {
+      const next = { ...prev };
+      delete next[group.id];
+      return next;
+    });
+
     // Update status to processing
     setGroupResults(prev =>
       prev.map((result) =>
@@ -441,14 +707,26 @@ function ImportPageContent() {
         prev.map((result) =>
           result.group.id === group.id
             ? {
-                ...result,
-                status: 'extracted' as const,
-                extractedData: data.data,
-                duplicatesChecked: false,
-              }
+              ...result,
+              status: 'extracted' as const,
+              extractedData: data.data,
+              lineMatches: data.lineMatches || [],
+              productOptions: data.productOptions || [],
+              duplicatesChecked: false,
+            }
             : result
         )
       );
+
+      setLineReviews((prev) => ({
+        ...prev,
+        [group.id]: (data.data?.poLines || []).map((_: ExtractedData['poLines'][number], lineIndex: number) => ({
+          action: data.lineMatches?.[lineIndex]?.suggestedProductId ? 'link' : 'create',
+          targetProductId: data.lineMatches?.[lineIndex]?.suggestedProductId || null,
+          reviewed: false,
+          shopifyBound: false,
+        })),
+      }));
 
       // Check for duplicates
       try {
@@ -483,10 +761,10 @@ function ImportPageContent() {
                 prev.map((result) =>
                   result.group.id === group.id
                     ? {
-                        ...result,
-                        duplicates: duplicateData.duplicates,
-                        duplicatesChecked: true,
-                      }
+                      ...result,
+                      duplicates: duplicateData.duplicates,
+                      duplicatesChecked: true,
+                    }
                     : result
                 )
               );
@@ -518,10 +796,10 @@ function ImportPageContent() {
           prev.map((result) =>
             result.group.id === group.id
               ? {
-                  ...result,
-                  status: 'error' as const,
-                  error: err instanceof Error ? err.message : 'An error occurred',
-                }
+                ...result,
+                status: 'error' as const,
+                error: err instanceof Error ? err.message : 'An error occurred',
+              }
               : result
           )
         );
@@ -532,10 +810,10 @@ function ImportPageContent() {
         prev.map((result) =>
           result.group.id === group.id
             ? {
-                ...result,
-                status: 'error' as const,
-                error: err instanceof Error ? err.message : 'An error occurred',
-              }
+              ...result,
+              status: 'error' as const,
+              error: err instanceof Error ? err.message : 'An error occurred',
+            }
             : result
         )
       );
@@ -605,22 +883,20 @@ function ImportPageContent() {
               <button
                 type="button"
                 onClick={() => setMode('import')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  mode === 'import'
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${mode === 'import'
                     ? 'bg-amber-600 text-white'
                     : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
-                }`}
+                  }`}
               >
                 Import
               </button>
               <button
                 type="button"
                 onClick={() => setMode('manual')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  mode === 'manual'
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${mode === 'manual'
                     ? 'bg-amber-600 text-white'
                     : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700'
-                }`}
+                  }`}
               >
                 Manual
               </button>
@@ -643,646 +919,779 @@ function ImportPageContent() {
           <>
             {/* Upload Form */}
             <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-stone-800 dark:text-stone-200 mb-3">
-                Upload Invoice Files (PNG, JPG, or PDF)
-              </label>
+              <div>
+                <label className="block text-sm font-medium text-stone-800 dark:text-stone-200 mb-3">
+                  Upload Invoice Files (PNG, JPG, or PDF)
+                </label>
 
-              {/* Drag and Drop Zone */}
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`relative border-2 border-dashed rounded-lg transition-all ${
-                  isDragging
-                    ? 'border-amber-600 bg-stone-100 dark:bg-stone-700'
-                    : 'border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 hover:border-stone-300 dark:hover:border-stone-600'
-                } ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-              >
-                <input
-                  id="file-upload"
-                  type="file"
-                  accept="image/*,.png,.jpg,.jpeg,.pdf,application/pdf"
-                  onChange={handleFileChange}
-                  disabled={loading}
-                  multiple
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
-                />
+                {/* Drag and Drop Zone */}
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`relative border-2 border-dashed rounded-lg transition-all ${isDragging
+                      ? 'border-amber-600 bg-stone-100 dark:bg-stone-700'
+                      : 'border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 hover:border-stone-300 dark:hover:border-stone-600'
+                    } ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  <input
+                    id="file-upload"
+                    type="file"
+                    accept="image/*,.png,.jpg,.jpeg,.pdf,application/pdf"
+                    onChange={handleFileChange}
+                    disabled={loading}
+                    multiple
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                  />
 
-                <div className="py-12 px-6 text-center">
-                  <svg
-                    className={`mx-auto h-16 w-16 ${isDragging ? 'text-amber-600' : 'text-stone-400'}`}
-                    stroke="currentColor"
-                    fill="none"
-                    viewBox="0 0 48 48"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
-                      strokeWidth={2}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                  <div className="mt-4 flex text-sm leading-6 text-stone-600 dark:text-stone-400 justify-center">
-                    <span className="font-semibold text-amber-600 hover:text-amber-700">
-                      Click to upload
-                    </span>
-                    <span className="pl-1">or drag and drop</span>
+                  <div className="py-12 px-6 text-center">
+                    <svg
+                      className={`mx-auto h-16 w-16 ${isDragging ? 'text-amber-600' : 'text-stone-400'}`}
+                      stroke="currentColor"
+                      fill="none"
+                      viewBox="0 0 48 48"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <div className="mt-4 flex text-sm leading-6 text-stone-600 dark:text-stone-400 justify-center">
+                      <span className="font-semibold text-amber-600 hover:text-amber-700">
+                        Click to upload
+                      </span>
+                      <span className="pl-1">or drag and drop</span>
+                    </div>
+                    <p className="text-xs leading-5 text-stone-500 dark:text-stone-400 mt-2">
+                      PNG, JPG, or PDF files
+                    </p>
                   </div>
-                  <p className="text-xs leading-5 text-stone-500 dark:text-stone-400 mt-2">
-                    PNG, JPG, or PDF files
-                  </p>
                 </div>
               </div>
-            </div>
 
-            {/* File Groups */}
-            {fileGroups.length > 0 && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-stone-900 dark:text-stone-100">
-                    File Groups ({fileGroups.length})
-                  </h3>
-                  {!loading && (
-                    <button
-                      type="button"
-                      onClick={() => setFileGroups([])}
-                      className="text-sm text-amber-600 hover:text-amber-700 font-medium"
-                    >
-                      Clear All
-                    </button>
-                  )}
-                </div>
+              {/* File Groups */}
+              {fileGroups.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-medium text-stone-900 dark:text-stone-100">
+                      File Groups ({fileGroups.length})
+                    </h3>
+                    {!loading && (
+                      <button
+                        type="button"
+                        onClick={() => setFileGroups([])}
+                        className="text-sm text-amber-600 hover:text-amber-700 font-medium"
+                      >
+                        Clear All
+                      </button>
+                    )}
+                  </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-                  {fileGroups.map((group) => {
-                    const groupResult = groupResults.find(r => r.group.id === group.id);
-                    const isProcessing = groupResult?.status === 'processing';
-                    const isExtracted = groupResult?.status === 'extracted';
-                    const hasError = groupResult?.status === 'error';
-                    
-                    return (
-                    <div
-                      key={group.id}
-                      onDragOver={(e) => handleGroupDragOver(e, group.id)}
-                      onDragLeave={handleGroupDragLeave}
-                      onDrop={(e) => handleGroupDrop(e, group.id)}
-                      className={`border-2 rounded-lg p-4 transition-all relative ${
-                        dragOverGroup === group.id
-                          ? 'border-amber-600 bg-stone-100 dark:bg-stone-700'
-                          : isExtracted
-                          ? 'border-green-200 bg-green-50 dark:bg-green-900/20 dark:border-green-800'
-                          : hasError
-                          ? 'border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800'
-                          : isProcessing
-                          ? 'border-amber-500 bg-stone-100 dark:bg-stone-700'
-                          : 'border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800'
-                      }`}
-                    >
-                      {/* Status Badge */}
-                      {isExtracted && (
-                        <div className="absolute top-2 right-2">
-                          <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        </div>
-                      )}
-                      {hasError && (
-                        <div className="absolute top-2 right-2">
-                          <svg className="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        </div>
-                      )}
-                      {/* Group Header */}
-                      <div className="mb-3">
-                        <input
-                          type="text"
-                          value={group.name}
-                          onChange={(e) => handleRenameGroup(group.id, e.target.value)}
-                          disabled={loading}
-                          className="w-full text-sm font-medium text-stone-900 dark:text-stone-100 bg-transparent border-b border-transparent hover:border-stone-200 dark:hover:border-stone-600 focus:border-amber-600 focus:outline-none px-1 py-1"
-                        />
-                        <div className="flex items-center justify-between mt-1">
-                          <p className="text-xs text-stone-500 dark:text-stone-400">
-                            {group.files.length} file{group.files.length !== 1 ? 's' : ''}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => handleAnalyzeGroup(group.id)}
-                            disabled={loading || groupResults.some(r => r.group.id === group.id && (r.status === 'processing' || r.status === 'extracted' || r.status === 'success'))}
-                            className="text-xs px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          >
-                            {groupResults.find(r => r.group.id === group.id)?.status === 'processing' ? 'Analyzing...' : 'Analyze'}
-                          </button>
-                        </div>
-                      </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                    {fileGroups.map((group) => {
+                      const groupResult = groupResults.find(r => r.group.id === group.id);
+                      const isProcessing = groupResult?.status === 'processing';
+                      const isExtracted = groupResult?.status === 'extracted';
+                      const hasError = groupResult?.status === 'error';
 
-                      {/* Files in Group */}
-                      <div className="space-y-2">
-                        {group.files.filter(f => f).map((file, fileIndex) => (
-                          <div
-                            key={fileIndex}
-                            draggable={!loading}
-                            onDragStart={() => handleFileDragStart(group.id, fileIndex)}
-                            className={`flex items-center justify-between p-2 bg-[#f9f9f8] dark:bg-stone-900 rounded border border-stone-200 dark:border-stone-700 ${
-                              !loading ? 'cursor-move hover:bg-white' : ''
+                      return (
+                        <div
+                          key={group.id}
+                          onDragOver={(e) => handleGroupDragOver(e, group.id)}
+                          onDragLeave={handleGroupDragLeave}
+                          onDrop={(e) => handleGroupDrop(e, group.id)}
+                          className={`border-2 rounded-lg p-4 transition-all relative ${dragOverGroup === group.id
+                              ? 'border-amber-600 bg-stone-100 dark:bg-stone-700'
+                              : isExtracted
+                                ? 'border-green-200 bg-green-50 dark:bg-green-900/20 dark:border-green-800'
+                                : hasError
+                                  ? 'border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800'
+                                  : isProcessing
+                                    ? 'border-amber-500 bg-stone-100 dark:bg-stone-700'
+                                    : 'border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800'
                             }`}
-                          >
-                            <div className="flex items-center gap-2 min-w-0 flex-1">
-                              <svg className="w-4 h-4 text-stone-400 dark:text-stone-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        >
+                          {/* Status Badge */}
+                          {isExtracted && (
+                            <div className="absolute top-2 right-2">
+                              <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                               </svg>
-                              <span className="text-xs text-stone-600 dark:text-stone-400 truncate">{file.name}</span>
                             </div>
-                            {!loading && (
+                          )}
+                          {hasError && (
+                            <div className="absolute top-2 right-2">
+                              <svg className="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                            </div>
+                          )}
+                          {/* Group Header */}
+                          <div className="mb-3">
+                            <input
+                              type="text"
+                              value={group.name}
+                              onChange={(e) => handleRenameGroup(group.id, e.target.value)}
+                              disabled={loading}
+                              className="w-full text-sm font-medium text-stone-900 dark:text-stone-100 bg-transparent border-b border-transparent hover:border-stone-200 dark:hover:border-stone-600 focus:border-amber-600 focus:outline-none px-1 py-1"
+                            />
+                            <div className="flex items-center justify-between mt-1">
+                              <p className="text-xs text-stone-500 dark:text-stone-400">
+                                {group.files.length} file{group.files.length !== 1 ? 's' : ''}
+                              </p>
                               <button
                                 type="button"
-                                onClick={() => handleRemoveFile(group.id, fileIndex)}
-                                className="text-amber-600 hover:text-amber-700 p-1 rounded hover:bg-stone-100 transition-colors flex-shrink-0"
+                                onClick={() => handleAnalyzeGroup(group.id)}
+                                disabled={loading || groupResults.some(r => r.group.id === group.id && (r.status === 'processing' || r.status === 'extracted' || r.status === 'success'))}
+                                className="text-xs px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                               >
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
+                                {groupResults.find(r => r.group.id === group.id)?.status === 'processing' ? 'Analyzing...' : 'Analyze'}
                               </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-
-                    </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={fileGroups.length === 0 || loading}
-              className="w-full bg-amber-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? (
-                <span className="flex items-center justify-center">
-                  <svg
-                    className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                  Processing...
-                </span>
-              ) : (
-                `Analyze All ${fileGroups.length} Group${fileGroups.length !== 1 ? 's' : ''}`
-              )}
-            </button>
-          </form>
-
-        {/* Success Message Display */}
-        {successMessage && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
-            <div className="flex items-start">
-              <div className="flex-shrink-0">
-                <svg
-                  className="h-5 w-5 text-green-600"
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </div>
-              <div className="ml-3 flex-1">
-                <h3 className="text-sm font-medium text-green-800">Success</h3>
-                <p className="text-sm text-green-700 mt-1">{successMessage}</p>
-              </div>
-              <button
-                onClick={() => setSuccessMessage(null)}
-                className="flex-shrink-0 ml-3 text-green-600 hover:text-green-600"
-              >
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Error Display */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <svg
-                  className="h-5 w-5 text-red-600"
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <h3 className="text-sm font-medium text-red-800">Error</h3>
-                <p className="text-sm text-red-700 mt-1">{error}</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Results Display */}
-        {groupResults.some(r => r.status !== 'success' && r.status !== 'cancelled') && (
-          <div className="space-y-4">
-            {groupResults.map((result, index) => {
-              // Don't display groups that have been accepted or cancelled
-              if (result.status === 'success' || result.status === 'cancelled') {
-                return null;
-              }
-              
-              return (
-              <div key={index} className="bg-white dark:bg-stone-800 rounded-lg shadow-md p-6 border border-stone-200 dark:border-stone-700">
-                <div className="flex items-center gap-2 mb-4">
-                  {result.status === 'processing' && (
-                    <svg className="animate-spin h-5 w-5 text-amber-600" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  )}
-                  {result.status === 'extracted' && (
-                    <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  )}
-                  {result.status === 'error' && (
-                    <svg className="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  )}
-                  <h3 className="text-lg font-semibold text-stone-900 dark:text-stone-100">{result.group.name}</h3>
-                  <span className="text-sm text-stone-500 dark:text-stone-400">
-                    ({result.group.files.length} file{result.group.files.length !== 1 ? 's' : ''})
-                  </span>
-                </div>
-
-                {result.status === 'processing' && (
-                  <p className="text-sm text-stone-600 dark:text-stone-400">Analyzing files...</p>
-                )}
-
-                {result.status === 'error' && (
-                  <div className="text-sm text-red-600">
-                    <p className="font-medium">Error:</p>
-                    <p>{result.error}</p>
-                  </div>
-                )}
-
-                {result.status === 'extracted' && result.extractedData && (
-                  <div className="space-y-6">
-                    {/* Duplicate Warning */}
-                    {result.duplicates && result.duplicates.length > 0 && !dismissedDuplicates.has(result.group.id) && (
-                      <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
-                        <div className="flex items-start">
-                          <div className="flex-shrink-0">
-                            <svg className="h-5 w-5 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                            </svg>
-                          </div>
-                          <div className="ml-3 flex-1">
-                            <h3 className="text-sm font-medium text-yellow-800">Possible Duplicate Order Detected</h3>
-                            <div className="mt-2 text-sm text-yellow-700">
-                              <p className="mb-2">This order may already exist in the system:</p>
-                              {result.duplicates.map((dup, dupIdx) => (
-                                <div key={dupIdx} className="mb-2 p-2 bg-yellow-100 rounded border border-yellow-300">
-                                  <p className="font-medium">
-                                    {dup.supplierName} - {dup.invoiceNumber || 'No Invoice #'}
-                                    {dup.invoiceDate && ` (${new Date(dup.invoiceDate).toLocaleDateString()})`}
-                                  </p>
-                                  <p className="text-xs mt-1">
-                                    Match Score: {dup.matchScore}% | {dup.matchReasons.join(', ')}
-                                  </p>
-                                  <p className="text-xs text-yellow-600">
-                                    Created: {new Date(dup.createdAt).toLocaleString()}
-                                  </p>
-                                </div>
-                              ))}
                             </div>
                           </div>
-                          <button
-                            onClick={() => setDismissedDuplicates(prev => new Set(prev).add(result.group.id))}
-                            className="flex-shrink-0 ml-3 text-yellow-600 hover:text-yellow-700 transition-colors"
-                            title="Dismiss warning"
-                          >
-                            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    )}
 
-                    {/* Supplier Information */}
-                    <div>
-                      <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">Supplier Information</h4>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Supplier Name *</label>
-                          <input
-                            type="text"
-                            value={getEditableData(index)?.supplier.name || ''}
-                            onChange={(e) => updateField(index, 'supplier.name', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Email</label>
-                          <input
-                            type="email"
-                            value={getEditableData(index)?.supplier.email || ''}
-                            onChange={(e) => updateField(index, 'supplier.email', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Phone</label>
-                          <input
-                            type="text"
-                            value={getEditableData(index)?.supplier.phone || ''}
-                            onChange={(e) => updateField(index, 'supplier.phone', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">VAT Number</label>
-                          <input
-                            type="text"
-                            value={getEditableData(index)?.supplier.vatNumber || ''}
-                            onChange={(e) => updateField(index, 'supplier.vatNumber', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Address</label>
-                          <textarea
-                            value={getEditableData(index)?.supplier.address || ''}
-                            onChange={(e) => updateField(index, 'supplier.address', e.target.value)}
-                            rows={2}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Purchase Order Information */}
-                    <div>
-                      <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">Purchase Order Details</h4>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Invoice Number</label>
-                          <input
-                            type="text"
-                            value={getEditableData(index)?.purchaseOrder.invoiceNumber || ''}
-                            onChange={(e) => updateField(index, 'purchaseOrder.invoiceNumber', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Invoice Date</label>
-                          <input
-                            type="date"
-                            value={getEditableData(index)?.purchaseOrder.invoiceDate || ''}
-                            onChange={(e) => updateField(index, 'purchaseOrder.invoiceDate', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Currency</label>
-                          <input
-                            type="text"
-                            value={getEditableData(index)?.purchaseOrder.originalCurrency || ''}
-                            onChange={(e) => updateField(index, 'purchaseOrder.originalCurrency', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Payment Terms</label>
-                          <input
-                            type="text"
-                            value={getEditableData(index)?.purchaseOrder.paymentTerms || ''}
-                            onChange={(e) => updateField(index, 'purchaseOrder.paymentTerms', e.target.value)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                      </div>
-                      
-                      {/* Notes Field */}
-                      <div className="mt-4">
-                        <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Notes</label>
-                        <textarea
-                          value={getEditableData(index)?.notes || ''}
-                          onChange={(e) => updateField(index, 'notes', e.target.value)}
-                          rows={3}
-                          placeholder="Add notes or special instructions for receiving and booking in stock"
-                          className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Line Items Table */}
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Line Items</h4>
-                        <button
-                          type="button"
-                          onClick={() => addLineItem(index)}
-                          className="inline-flex items-center px-3 py-1 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700"
-                        >
-                          <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                          Add Line
-                        </button>
-                      </div>
-                      
-                      <div className="overflow-x-auto border border-stone-200 dark:border-stone-700 rounded-lg">
-                        <table className="min-w-full divide-y divide-stone-200 dark:divide-stone-700">
-                          <thead className="bg-[#f9f9f8] dark:bg-stone-900">
-                            <tr>
-                              <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase">Description</th>
-                              <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase">SKU</th>
-                              <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-24">Qty</th>
-                              <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">Unit Price</th>
-                              <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">Line Total</th>
-                              <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">RRP</th>
-                              <th className="px-3 py-2 w-10"></th>
-                            </tr>
-                          </thead>
-                          <tbody className="bg-white dark:bg-stone-800 divide-y divide-stone-200 dark:divide-stone-700">
-                            {getEditableData(index)?.poLines.map((line, lineIndex) => (
-                              <tr key={lineIndex}>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="text"
-                                    value={line.description}
-                                    onChange={(e) => updateLineItem(index, lineIndex, 'description', e.target.value)}
-                                    className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                                  />
-                                </td>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="text"
-                                    value={line.supplierSku || ''}
-                                    onChange={(e) => updateLineItem(index, lineIndex, 'supplierSku', e.target.value)}
-                                    className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                                  />
-                                </td>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="number"
-                                    value={line.quantity}
-                                    onChange={(e) => updateLineItem(index, lineIndex, 'quantity', parseFloat(e.target.value) || 0)}
-                                    className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                                  />
-                                </td>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={line.unitCostExVAT}
-                                    onChange={(e) => updateLineItem(index, lineIndex, 'unitCostExVAT', parseFloat(e.target.value) || 0)}
-                                    className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                                  />
-                                </td>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={line.lineTotalExVAT}
-                                    onChange={(e) => updateLineItem(index, lineIndex, 'lineTotalExVAT', parseFloat(e.target.value) || 0)}
-                                    className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                                  />
-                                </td>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={line.rrp || ''}
-                                    onChange={(e) => updateLineItem(index, lineIndex, 'rrp', parseFloat(e.target.value) || null)}
-                                    placeholder="Optional"
-                                    className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                                  />
-                                </td>
-                                <td className="px-3 py-2">
+                          {/* Files in Group */}
+                          <div className="space-y-2">
+                            {group.files.filter(f => f).map((file, fileIndex) => (
+                              <div
+                                key={fileIndex}
+                                draggable={!loading}
+                                onDragStart={() => handleFileDragStart(group.id, fileIndex)}
+                                className={`flex items-center justify-between p-2 bg-[#f9f9f8] dark:bg-stone-900 rounded border border-stone-200 dark:border-stone-700 ${!loading ? 'cursor-move hover:bg-white' : ''
+                                  }`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <svg className="w-4 h-4 text-stone-400 dark:text-stone-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                  </svg>
+                                  <span className="text-xs text-stone-600 dark:text-stone-400 truncate">{file.name}</span>
+                                </div>
+                                {!loading && (
                                   <button
                                     type="button"
-                                    onClick={() => removeLineItem(index, lineIndex)}
-                                    className="text-amber-600 hover:text-amber-700"
+                                    onClick={() => handleRemoveFile(group.id, fileIndex)}
+                                    className="text-amber-600 hover:text-amber-700 p-1 rounded hover:bg-stone-100 transition-colors flex-shrink-0"
                                   >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                     </svg>
                                   </button>
-                                </td>
-                              </tr>
+                                )}
+                              </div>
                             ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
+                          </div>
 
-                    {/* Totals */}
-                    <div className="bg-[#f9f9f8] dark:bg-stone-900 rounded-lg p-4 border border-stone-200 dark:border-stone-700">
-                      <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">Totals</h4>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Subtotal (ex VAT) - GBP</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={getEditableData(index)?.totals.subtotal || 0}
-                            onChange={(e) => updateField(index, 'totals.subtotal', parseFloat(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
                         </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Extras (Shipping, etc.) - GBP</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={getEditableData(index)?.totals.extras || 0}
-                            onChange={(e) => updateField(index, 'totals.extras', parseFloat(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">VAT - GBP</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={getEditableData(index)?.totals.vat || 0}
-                            onChange={(e) => updateField(index, 'totals.vat', parseFloat(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Total - GBP</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={getEditableData(index)?.totals.total || 0}
-                            onChange={(e) => updateField(index, 'totals.total', parseFloat(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex justify-end gap-3">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteResult(result.group.id)}
-                        className="px-6 py-2 bg-stone-100 dark:bg-stone-700 text-stone-900 dark:text-stone-100 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600 focus:outline-none focus:ring-2 focus:ring-amber-600 font-medium"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSavePurchaseOrder(result.group.id)}
-                        disabled={savingIndex === index}
-                        className="px-6 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {savingIndex === index ? 'Saving...' : 'Save Purchase Order'}
-                      </button>
-                    </div>
+                      );
+                    })}
                   </div>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={fileGroups.length === 0 || loading}
+                className="w-full bg-amber-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading ? (
+                  <span className="flex items-center justify-center">
+                    <svg
+                      className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    Processing...
+                  </span>
+                ) : (
+                  `Analyze All ${fileGroups.length} Group${fileGroups.length !== 1 ? 's' : ''}`
                 )}
+              </button>
+            </form>
+
+            {/* Success Message Display */}
+            {successMessage && (
+              <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4 mb-6">
+                <div className="flex items-start">
+                  <div className="flex-shrink-0">
+                    <svg
+                      className="h-5 w-5 text-green-600"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
+                  <div className="ml-3 flex-1">
+                    <h3 className="text-sm font-medium text-green-800">Success</h3>
+                    <p className="text-sm text-green-700 mt-1">{successMessage}</p>
+                  </div>
+                  <button
+                    onClick={() => setSuccessMessage(null)}
+                    className="flex-shrink-0 ml-3 text-green-600 hover:text-green-600"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
               </div>
-              );
-            })}
-          </div>
-        )}
+            )}
+
+            {/* Error Display */}
+            {error && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-6">
+                <div className="flex">
+                  <div className="flex-shrink-0">
+                    <svg
+                      className="h-5 w-5 text-red-600"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
+                  <div className="ml-3">
+                    <h3 className="text-sm font-medium text-red-800">Error</h3>
+                    <p className="text-sm text-red-700 mt-1">{error}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Results Display */}
+            {groupResults.some(r => r.status !== 'success' && r.status !== 'cancelled') && (
+              <div className="space-y-4">
+                {groupResults.map((result, index) => {
+                  // Don't display groups that have been accepted or cancelled
+                  if (result.status === 'success' || result.status === 'cancelled') {
+                    return null;
+                  }
+
+                  const groupLineReviews = getLineReviews(result.group.id);
+
+                  return (
+                    <div key={index} className="bg-white dark:bg-stone-800 rounded-lg shadow-md p-6 border border-stone-200 dark:border-stone-700">
+                      <div className="flex items-center gap-2 mb-4">
+                        {result.status === 'processing' && (
+                          <svg className="animate-spin h-5 w-5 text-amber-600" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                        )}
+                        {result.status === 'extracted' && (
+                          <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        )}
+                        {result.status === 'error' && (
+                          <svg className="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        )}
+                        <h3 className="text-lg font-semibold text-stone-900 dark:text-stone-100">{result.group.name}</h3>
+                        <span className="text-sm text-stone-500 dark:text-stone-400">
+                          ({result.group.files.length} file{result.group.files.length !== 1 ? 's' : ''})
+                        </span>
+                      </div>
+
+                      {result.status === 'processing' && (
+                        <p className="text-sm text-stone-600 dark:text-stone-400">Analyzing files...</p>
+                      )}
+
+                      {result.status === 'error' && (
+                        <div className="text-sm text-red-600 space-y-3">
+                          <div>
+                            <p className="font-medium">Error:</p>
+                            <p>{result.error}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleAnalyzeGroup(result.group.id)}
+                              className="inline-flex items-center px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-medium hover:bg-amber-700"
+                            >
+                              Retry analysis
+                            </button>
+                            <span className="text-xs text-stone-500 dark:text-stone-400">
+                              If you just hit a rate limit, wait a moment and retry this group.
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {result.status === 'extracted' && result.extractedData && (
+                        <div className="space-y-6">
+                          {/* Duplicate Warning */}
+                          {result.duplicates && result.duplicates.length > 0 && !dismissedDuplicates.has(result.group.id) && (
+                            <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                              <div className="flex items-start">
+                                <div className="flex-shrink-0">
+                                  <svg className="h-5 w-5 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                  </svg>
+                                </div>
+                                <div className="ml-3 flex-1">
+                                  <h3 className="text-sm font-medium text-yellow-800 dark:text-yellow-500">Possible Duplicate Order Detected</h3>
+                                  <div className="mt-2 text-sm text-yellow-700 dark:text-yellow-400">
+                                    <p className="mb-2">This order may already exist in the system:</p>
+                                    {result.duplicates.map((dup, dupIdx) => (
+                                      <div key={dupIdx} className="mb-2 p-2 bg-yellow-100 dark:bg-yellow-900/40 rounded border border-yellow-300 dark:border-yellow-700">
+                                        <p className="font-medium">
+                                          {dup.supplierName} - {dup.invoiceNumber || 'No Invoice #'}
+                                          {dup.invoiceDate && ` (${new Date(dup.invoiceDate).toLocaleDateString()})`}
+                                        </p>
+                                        <p className="text-xs mt-1">
+                                          Match Score: {dup.matchScore}% | {dup.matchReasons.join(', ')}
+                                        </p>
+                                        <p className="text-xs text-yellow-600">
+                                          Created: {new Date(dup.createdAt).toLocaleString()}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => setDismissedDuplicates(prev => new Set(prev).add(result.group.id))}
+                                  className="flex-shrink-0 ml-3 text-yellow-600 hover:text-yellow-700 transition-colors"
+                                  title="Dismiss warning"
+                                >
+                                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Supplier Information */}
+                          <div>
+                            <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">Supplier Information</h4>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Supplier Name *</label>
+                                <input
+                                  type="text"
+                                  value={getEditableData(result.group.id)?.supplier.name || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.name', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Email</label>
+                                <input
+                                  type="email"
+                                  value={getEditableData(result.group.id)?.supplier.email || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.email', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Phone</label>
+                                <input
+                                  type="text"
+                                  value={getEditableData(result.group.id)?.supplier.phone || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.phone', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">VAT Number</label>
+                                <input
+                                  type="text"
+                                  value={getEditableData(result.group.id)?.supplier.vatNumber || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.vatNumber', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Address</label>
+                                <textarea
+                                  value={getEditableData(result.group.id)?.supplier.address || ''}
+                                  onChange={(e) => updateField(result.group.id, 'supplier.address', e.target.value)}
+                                  rows={2}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Purchase Order Information */}
+                          <div>
+                            <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">Purchase Order Details</h4>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Invoice Number</label>
+                                <input
+                                  type="text"
+                                  value={getEditableData(result.group.id)?.purchaseOrder.invoiceNumber || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.invoiceNumber', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Invoice Date</label>
+                                <input
+                                  type="date"
+                                  value={getEditableData(result.group.id)?.purchaseOrder.invoiceDate || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.invoiceDate', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Currency</label>
+                                <input
+                                  type="text"
+                                  value={getEditableData(result.group.id)?.purchaseOrder.originalCurrency || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.originalCurrency', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Payment Terms</label>
+                                <input
+                                  type="text"
+                                  value={getEditableData(result.group.id)?.purchaseOrder.paymentTerms || ''}
+                                  onChange={(e) => updateField(result.group.id, 'purchaseOrder.paymentTerms', e.target.value)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Notes Field */}
+                            <div className="mt-4">
+                              <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Notes</label>
+                              <textarea
+                                value={getEditableData(result.group.id)?.notes || ''}
+                                onChange={(e) => updateField(result.group.id, 'notes', e.target.value)}
+                                rows={3}
+                                placeholder="Add notes or special instructions for receiving and booking in stock"
+                                className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Line Items Table */}
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Line Items</h4>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => acceptSuggestedMatches(result.group.id)}
+                                  className="inline-flex items-center px-3 py-1 text-xs font-medium text-stone-700 bg-stone-100 dark:bg-stone-700 dark:text-stone-100 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600"
+                                >
+                                  Accept Suggested Matches
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => createAllUnmatched(result.group.id)}
+                                  className="inline-flex items-center px-3 py-1 text-xs font-medium text-stone-700 bg-stone-100 dark:bg-stone-700 dark:text-stone-100 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600"
+                                >
+                                  Create All Unmatched
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => addLineItem(result.group.id)}
+                                  className="inline-flex items-center px-3 py-1 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700"
+                                >
+                                  <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                  </svg>
+                                  Add Line
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="overflow-x-auto border border-stone-200 dark:border-stone-700 rounded-lg">
+                              <table className="min-w-full divide-y divide-stone-200 dark:divide-stone-700">
+                                <thead className="bg-[#f9f9f8] dark:bg-stone-900">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase">Description</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase">SKU</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-24">Qty</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">Unit Price</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">Line Total</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase w-32">RRP</th>
+                                    <th className="px-3 py-2 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase min-w-[320px]">StockLane Review</th>
+                                    <th className="px-3 py-2 w-10"></th>
+                                  </tr>
+                                </thead>
+                                <tbody className="bg-white dark:bg-stone-800 divide-y divide-stone-200 dark:divide-stone-700">
+                                  {getEditableData(result.group.id)?.poLines.map((line, lineIndex) => {
+                                    const review = groupLineReviews[lineIndex] || {
+                                      action: 'create' as const,
+                                      targetProductId: null,
+                                      reviewed: false,
+                                      shopifyBound: false,
+                                    };
+                                    const topSuggestion = getLiveTopSuggestion(
+                                      line,
+                                      result.lineMatches?.[lineIndex],
+                                      result.productOptions,
+                                    );
+
+                                    return (
+                                    <tr key={lineIndex}>
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="text"
+                                          value={line.description}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'description', e.target.value)}
+                                          className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                        />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="text"
+                                          value={line.supplierSku || ''}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'supplierSku', e.target.value)}
+                                          className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                        />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="number"
+                                          value={line.quantity}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'quantity', parseFloat(e.target.value) || 0)}
+                                          className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                        />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={line.unitCostExVAT}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'unitCostExVAT', parseFloat(e.target.value) || 0)}
+                                          className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                        />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={line.lineTotalExVAT}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'lineTotalExVAT', parseFloat(e.target.value) || 0)}
+                                          className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                        />
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={line.rrp || ''}
+                                          onChange={(e) => updateLineItem(result.group.id, lineIndex, 'rrp', parseFloat(e.target.value) || null)}
+                                          placeholder="Optional"
+                                          className="w-full px-2 py-1 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                        />
+                                      </td>
+                                      <td className="px-3 py-2 align-top">
+                                        <div className="space-y-2 min-w-[320px]">
+                                          {topSuggestion ? (
+                                            <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 p-2">
+                                              <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                                                {getMatchLabel(topSuggestion.matchType)}: {topSuggestion.productName}
+                                              </p>
+                                              <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                                                {topSuggestion.reason}
+                                              </p>
+                                            </div>
+                                          ) : (
+                                            <p className="text-xs text-stone-500 dark:text-stone-400">
+                                              No StockLane match found. Create a new SKU or choose an existing product.
+                                            </p>
+                                          )}
+
+                                          <div className="grid grid-cols-1 gap-2">
+                                            <select
+                                              value={review.action}
+                                              onChange={(e) =>
+                                                updateLineReview(result.group.id, lineIndex, {
+                                                  action: e.target.value as 'link' | 'create',
+                                                  reviewed: false,
+                                                  targetProductId:
+                                                    e.target.value === 'link'
+                                                      ? review.targetProductId || topSuggestion?.productId || null
+                                                      : null,
+                                                })
+                                              }
+                                              className="w-full px-2 py-1.5 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                            >
+                                              <option value="link">Link to existing StockLane product</option>
+                                              <option value="create">Create new StockLane SKU</option>
+                                            </select>
+
+                                            {review.action === 'link' ? (
+                                              <select
+                                                value={review.targetProductId || ''}
+                                                onChange={(e) =>
+                                                  updateLineReview(result.group.id, lineIndex, {
+                                                    targetProductId: e.target.value || null,
+                                                    reviewed: false,
+                                                  })
+                                                }
+                                                className="w-full px-2 py-1.5 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                                              >
+                                                <option value="">Select a product</option>
+                                                {(result.productOptions || []).map((product) => (
+                                                  <option key={product.id} value={product.id}>
+                                                    {product.name}
+                                                    {product.primarySku ? ` (${product.primarySku})` : ''}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={review.shopifyBound}
+                                                  onChange={(e) =>
+                                                    updateLineReview(result.group.id, lineIndex, {
+                                                      shopifyBound: e.target.checked,
+                                                      reviewed: false,
+                                                    })
+                                                  }
+                                                  className="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-600"
+                                                />
+                                                Create Shopify draft on receive
+                                              </label>
+                                            )}
+                                          </div>
+
+                                          <div className="flex items-center justify-between">
+                                            <span
+                                              className={`text-xs font-medium ${review.reviewed ? 'text-green-700 dark:text-green-400' : 'text-stone-500 dark:text-stone-400'}`}
+                                            >
+                                              {review.reviewed ? 'Reviewed' : 'Awaiting confirmation'}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => confirmLineReview(result.group.id, lineIndex)}
+                                              disabled={review.action === 'link' && !review.targetProductId}
+                                              className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                              Confirm
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => removeLineItem(result.group.id, lineIndex)}
+                                          className="text-amber-600 hover:text-amber-700"
+                                        >
+                                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                          </svg>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  )})}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+
+                          {/* Totals */}
+                          <div className="bg-[#f9f9f8] dark:bg-stone-900 rounded-lg p-4 border border-stone-200 dark:border-stone-700">
+                            <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-3">Totals</h4>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Subtotal (ex VAT) - GBP</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={getEditableData(result.group.id)?.totals.subtotal || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.subtotal', parseFloat(e.target.value) || 0)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Extras (Shipping, etc.) - GBP</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={getEditableData(result.group.id)?.totals.extras || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.extras', parseFloat(e.target.value) || 0)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">VAT - GBP</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={getEditableData(result.group.id)?.totals.vat || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.vat', parseFloat(e.target.value) || 0)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">Total - GBP</label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  value={getEditableData(result.group.id)?.totals.total || 0}
+                                  onChange={(e) => updateField(result.group.id, 'totals.total', parseFloat(e.target.value) || 0)}
+                                  className="w-full px-3 py-2 border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900 rounded-md text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Action Buttons */}
+                          <div className="flex justify-end gap-3">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteResult(result.group.id)}
+                              className="px-6 py-2 bg-stone-100 dark:bg-stone-700 text-stone-900 dark:text-stone-100 rounded-md hover:bg-stone-200 dark:hover:bg-stone-600 focus:outline-none focus:ring-2 focus:ring-amber-600 font-medium"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSavePurchaseOrder(result.group.id)}
+                              disabled={savingGroupId === result.group.id}
+                              className="px-6 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {savingGroupId === result.group.id ? 'Saving...' : 'Save Purchase Order'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </>
         )}
 
@@ -1295,7 +1704,7 @@ function ImportPageContent() {
               Enter purchase order details manually when you do not have an invoice file to upload.
             </p>
             {successMessage && (
-              <div className="mb-6 bg-green-50 border border-green-200 rounded-lg p-4">
+              <div className="mb-6 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
                 <div className="flex items-start">
                   <div className="flex-shrink-0">
                     <svg

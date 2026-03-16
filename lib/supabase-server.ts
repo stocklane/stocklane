@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 let serverSupabaseInstance: ReturnType<typeof createClient> | null = null;
 
 function createServerSupabase() {
-  const serverSupabaseUrl = process.env.SUPABASE_URL;
+  const serverSupabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serverSupabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!serverSupabaseUrl || !serverSupabaseServiceKey) {

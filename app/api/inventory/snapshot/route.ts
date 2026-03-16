@@ -6,6 +6,53 @@ import { applyRateLimit } from '@/lib/rate-limit';
 const CACHE_KEY = 'inventory_snapshot_v1';
 const CACHE_TTL_MS = 1000 * 60; // 1 minute
 
+interface ProductRow {
+  id: string;
+  name: string;
+  primarysku: string | null;
+  suppliersku: string | null;
+  supplierid: string | null;
+  folderid: string | null;
+  barcodes: string[] | null;
+  aliases: string[] | null;
+  category: string | null;
+  tags: string[] | null;
+  imageurl: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface InventoryRow {
+  id: string;
+  productid: string;
+  quantityonhand: number | string | null;
+  averagecostgbp: number | string | null;
+  lastupdated: string;
+}
+
+interface TransitRow {
+  productid: string;
+  polineid: string | null;
+  quantity: number | string | null;
+  remainingquantity: number | string | null;
+  unitcostgbp: number | string | null;
+}
+
+interface SupplierRow {
+  id: string;
+  name: string;
+}
+
+interface PurchaseOrderRow {
+  id: string;
+}
+
+interface POLineRow {
+  id: string;
+  unitcostexvat: number | string | null;
+  purchaseorderid: string;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
@@ -22,7 +69,8 @@ export async function GET(request: NextRequest) {
         const { data: products } = await supabase
           .from('products')
           .select('*')
-          .eq('user_id', user.id);
+          .eq('user_id', user.id)
+          .is('deleted_at', null);
 
         const { data: inventory } = await supabase
           .from('inventory')
@@ -44,8 +92,8 @@ export async function GET(request: NextRequest) {
           .from('purchaseorders')
           .select('id')
           .eq('user_id', user.id);
-        const poIds = purchaseOrders?.map((po: any) => po.id) || [];
-        let poLines: any[] = [];
+        const poIds = (purchaseOrders as PurchaseOrderRow[] | null)?.map((po) => po.id) || [];
+        let poLines: POLineRow[] = [];
         if (poIds.length > 0) {
           const { data } = await supabase
             .from('polines')
@@ -54,19 +102,19 @@ export async function GET(request: NextRequest) {
           poLines = data || [];
         }
 
-        const suppliersById = new Map(suppliers?.map((s: any) => [s.id, s]) ?? []);
-        const inventoryByProductId = new Map(inventory?.map((i: any) => [i.productid, i]) ?? []);
-        const poLinesById = new Map(poLines.map((l: any) => [l.id, l]));
+        const suppliersById = new Map<string, SupplierRow>((suppliers as SupplierRow[] | null)?.map((s) => [s.id, s]) ?? []);
+        const inventoryByProductId = new Map<string, InventoryRow>((inventory as InventoryRow[] | null)?.map((i) => [i.productid, i]) ?? []);
+        const poLinesById = new Map<string, POLineRow>(poLines.map((l) => [l.id, l]));
 
         // Group transit by product
-        const transitByProductId = new Map<string, any[]>();
-        transit?.forEach((t: any) => {
+        const transitByProductId = new Map<string, TransitRow[]>();
+        (transit as TransitRow[] | null)?.forEach((t) => {
           const arr = transitByProductId.get(t.productid) || [];
           arr.push(t);
           transitByProductId.set(t.productid, arr);
         });
 
-        return products?.map((product: any) => {
+        return (products as ProductRow[] | null)?.map((product) => {
           const invRow = inventoryByProductId.get(product.id) || null;
 
           let inventoryRecord = invRow
@@ -81,13 +129,26 @@ export async function GET(request: NextRequest) {
 
           const productTransit = transitByProductId.get(product.id) || [];
           const remainingTransit = productTransit.filter(
-            (t: any) => Number(t.remainingquantity ?? 0) > 0,
+            (t) => Number(t.remainingquantity ?? 0) > 0,
           );
 
           const quantityInTransit = remainingTransit.reduce(
-            (sum: number, t: any) => sum + Number(t.remainingquantity ?? 0),
+            (sum: number, t) => sum + Number(t.remainingquantity ?? 0),
             0,
           );
+
+          // Prefer editable PO line pricing over transit.unitcostgbp, which can become stale.
+          const resolveUnitCost = (transitRow: TransitRow, poLine: POLineRow | null): number => {
+            const poLineUnit = Number(poLine?.unitcostexvat);
+            if (Number.isFinite(poLineUnit) && poLineUnit >= 0) {
+              return poLineUnit;
+            }
+            const transitUnit = Number(transitRow?.unitcostgbp);
+            if (Number.isFinite(transitUnit) && transitUnit >= 0) {
+              return transitUnit;
+            }
+            return 0;
+          };
 
           // Derive blended average cost from on-hand + transit (matches original getInventorySnapshot)
           const onHandQty = inventoryRecord ? inventoryRecord.quantityOnHand : 0;
@@ -100,14 +161,9 @@ export async function GET(request: NextRequest) {
               const qty = Number(t.remainingquantity ?? 0);
               if (!Number.isFinite(qty) || qty <= 0) continue;
 
-              const poLine = poLinesById.get(t.polineid) || null;
+              const poLine = t.polineid ? poLinesById.get(t.polineid) || null : null;
 
-              let rawUnitCost = Number(t.unitcostgbp ?? 0);
-              if (!Number.isFinite(rawUnitCost) || rawUnitCost <= 0) {
-                rawUnitCost = Number(poLine?.unitcostexvat ?? 0);
-              }
-
-              const unitCost = Number.isFinite(rawUnitCost) && rawUnitCost >= 0 ? rawUnitCost : 0;
+              const unitCost = resolveUnitCost(t, poLine);
 
               blendedTotalQty += qty;
               blendedTotalCost += qty * unitCost;
@@ -128,11 +184,8 @@ export async function GET(request: NextRequest) {
               const qty = Number(t.quantity ?? 0);
               if (!Number.isFinite(qty) || qty <= 0) continue;
 
-              const poLine = poLinesById.get(t.polineid) || null;
-              let unitCost = Number(t.unitcostgbp ?? 0);
-              if (!Number.isFinite(unitCost) || unitCost <= 0) {
-                unitCost = Number(poLine?.unitcostexvat ?? 0);
-              }
+              const poLine = t.polineid ? poLinesById.get(t.polineid) || null : null;
+              const unitCost = resolveUnitCost(t, poLine);
               if (!Number.isFinite(unitCost) || unitCost <= 0) continue;
 
               fallbackTotalQty += qty;
@@ -162,6 +215,7 @@ export async function GET(request: NextRequest) {
               primarySku: product.primarysku,
               supplierSku: product.suppliersku,
               supplierId: product.supplierid,
+              folderId: product.folderid ?? null,
               barcodes: product.barcodes || [],
               aliases: product.aliases || [],
               category: product.category,

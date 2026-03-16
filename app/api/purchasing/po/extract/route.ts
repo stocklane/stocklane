@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
+import { suggestInvoiceLineMatches, type MatchableProduct } from '@/lib/invoice-line-matching';
 
 // Force Node.js runtime for pdf-parse
 export const runtime = 'nodejs';
@@ -109,45 +110,27 @@ Exchange rates the SERVER will use to convert TO GBP (for your reference ONLY, d
 - Always output all monetary values (unit costs, line totals, subtotal, extras, VAT, total) in the ORIGINAL invoice currency.
 - The server will use the originalCurrency and the exchange rates above to convert everything to GBP.
 
-**SKU/Item Code Extraction (VERY IMPORTANT):**
-- Look for product codes in a dedicated column or field, often labeled: "SKU", "Item #", "Code", "Product Code", "Item Code", "Part #", "Ref", "Article No"
-- SKUs are typically alphanumeric codes like: "TCG-001", "ABC123", "PROD-2024-001", "12345-A"
-- SKUs are usually positioned BEFORE or AFTER the description, in their own column
-- DO NOT extract the quantity as the SKU - quantity is always a simple number (1, 2, 10, etc.)
-- DO NOT extract prices, dates, or invoice numbers as SKUs
-- If you see a column with mixed alphanumeric codes next to descriptions, that's likely the SKU
-- If no clear SKU column exists, leave supplierSku as empty string or null
-- When in doubt, prefer leaving it empty rather than guessing incorrectly
+**PACK SIZE & UNIT EXPANSION (CRITICAL):**
+- You MUST detect if an item contains multiple units (e.g., "12 units at £9.99", "CDU (10)", "Case: 12").
+- Check ALL columns (Description, RRP, Price, Units) for patterns like "X units" or "X items".
+- If you see a pattern like "X units at £Y", then "X" is the pack size and "Y" is the RRP.
+- You MUST multiply the invoice quantity by the pack size "X" to get the total individual units.
+- **IMPORTANT**: Your final "quantity" should represent individual units.
+- **Example**: Invoice says "Quantity: 1" and "12 units at £9.99". Your JSON: quantity: 12, rrp: 9.99, packSize: 12.
+- **Example**: Invoice says "Quantity: 4" and "Description: CDU (10)". Your JSON: quantity: 40, packSize: 10.
+- When you expand quantity, unitCostExVAT MUST be (lineTotal / quantity).
 
 **RRP (Recommended Retail Price) Extraction:**
-- Look for columns labeled: "RRP", "Retail Price", "MSRP", "Recommended Price", "Selling Price", "List Price"
-- RRP is usually higher than the unit cost and represents the suggested selling price
-- Common on distributor invoices, especially for retail goods like trading cards, games, collectibles
-- If multiple price columns exist, RRP is typically the highest price (excluding VAT)
-- If no RRP is clearly indicated, set rrp to null - do NOT guess or use unit cost
-- RRP should be in the same currency as other prices on the invoice
-- Look for text like "RRP:" or "Retail:" followed by a price
+- ONLY extract the numeric currency value (e.g., 9.99).
+- If no RRP price is found, return null.
 
-**UNIT COST vs LINE TOTAL - CRITICAL:**
-- Each line item has a quantity, a unit cost (price per single unit), and a line total (quantity × unit cost).
-- Some invoices only show ONE price per line (not both unit cost and line total).
-- When only ONE price is shown per line, you MUST determine if it is the unit cost or line total:
-  1. Sum ALL the single prices across all line items.
-  2. Compare that sum to the invoice subtotal/total (ignoring shipping/extras/VAT).
-  3. If the sum of prices ≈ the subtotal/total → the prices are LINE TOTALS. Calculate unit cost = price / quantity.
-  4. If the sum of (price × quantity) ≈ the subtotal/total → the prices are UNIT COSTS. Calculate line total = price × quantity.
-- Example: "5 Widget ¥53,500" with invoice total ≈ sum of all such prices → ¥53,500 is the LINE TOTAL, unit cost = ¥53,500 / 5 = ¥10,700.
-- ALWAYS verify: the sum of all lineTotalExVAT values should approximately equal the subtotal.
+**SKU/Item Code Extraction:**
+- Extract product codes into "supplierSku". Do NOT use quantity or price as SKU.
 
-**Other Important Rules:**
-- If multiple files/pages are provided, they are ALL part of the SAME invoice/order - combine all data
-- Extract ALL line items from ALL documents/pages
-- **EXTRAS field**: Extract shipping, delivery, handling, freight charges (NOT part of line items). Set to 0 if none.
-- **SUBTOTAL**: Sum of all line items BEFORE extras and VAT
-- **TOTAL**: subtotal + extras + VAT
-- If a field is not present, use null or empty string (use 0 for numeric fields like extras)
-- Ensure all numbers are numeric values, not strings
-- Combine line items from all pages into a single poLines array`;
+**Totals:**
+- Extract subtotal, extras (shipping), VAT, and grand total.
+
+Combine all pages. Return ONLY valid JSON.`;
 }
 
 interface ExtractedData {
@@ -168,8 +151,10 @@ interface ExtractedData {
     description: string;
     supplierSku?: string;
     quantity: number;
+    packSize?: number | null;
     unitCostExVAT: number;
     lineTotalExVAT: number;
+    rrp?: number | null;
   }>;
   totals: {
     subtotal: number;
@@ -177,6 +162,93 @@ interface ExtractedData {
     vat: number;
     total: number;
   };
+}
+
+function roundMoney(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function parseMoney(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return 0;
+  const cleaned = value.replace(/[^0-9.-]/g, '');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeLineMath(extractedData: ExtractedData): void {
+  extractedData.poLines = (extractedData.poLines || []).map((line) => {
+    let quantity = parseMoney(line.quantity);
+    let unitCostExVAT = parseMoney(line.unitCostExVAT);
+    let lineTotalExVAT = parseMoney(line.lineTotalExVAT);
+    let rrp = typeof line.rrp === 'number' ? line.rrp : null;
+    
+    // --- HEURISTIC SAFETY NET ---
+    const commonMultipliers = [6, 8, 10, 12, 18, 24, 30, 36, 40, 50, 60, 100];
+    const desc = (line.description || '').toLowerCase();
+    const hasPackKeywords = desc.includes('cdu') || desc.includes('box') || desc.includes('pack') || 
+                            desc.includes('display') || desc.includes('units') || desc.includes('(') ||
+                            desc.includes('collection');
+
+    if (rrp !== null && commonMultipliers.includes(rrp) && quantity <= 10 && hasPackKeywords) {
+      if (lineTotalExVAT > 0) {
+        const isTotalPriceInUnit = Math.abs(unitCostExVAT - lineTotalExVAT) < 0.05;
+        if (isTotalPriceInUnit || quantity < rrp) {
+          quantity = quantity * rrp;
+          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+          rrp = null; // Clear multiplier from RRP
+        }
+      }
+    }
+
+    // Force individual unit calculation if packSize was extracted or implied by keywords
+    const pSize = typeof line.packSize === 'number' ? line.packSize : 1;
+    let multiplier = pSize;
+
+    // Special case for "Collection" items which are often 12 units at Esdevium
+    if (multiplier === 1 && desc.includes('collection') && quantity === 1 && lineTotalExVAT > 60) {
+      // If a single 'collection' bundle is > £60, it's almost certainly a box of units
+      // Check if total / 12 ~= common unit price
+      const impliedUnit = lineTotalExVAT / 12;
+      if (impliedUnit > 4 && impliedUnit < 10) {
+        multiplier = 12;
+      }
+    }
+
+    if (multiplier > 1 && quantity < multiplier && quantity > 0 && quantity <= 10) {
+      // AI likely put box count in quantity instead of units
+      quantity = quantity * multiplier;
+      unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+    }
+
+    if (quantity > 0) {
+      if (lineTotalExVAT > 0) {
+        unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+      } else if (unitCostExVAT > 0) {
+        lineTotalExVAT = roundMoney(unitCostExVAT * quantity);
+      }
+    }
+
+    return {
+      ...line,
+      quantity,
+      unitCostExVAT: roundMoney(Math.max(0, unitCostExVAT)),
+      lineTotalExVAT: roundMoney(Math.max(0, lineTotalExVAT)),
+      rrp
+    };
+  });
+
+  if (extractedData.totals) {
+    const computedSubtotal = roundMoney(
+      extractedData.poLines.reduce((sum, line) => sum + (line.lineTotalExVAT || 0), 0),
+    );
+    const subtotal = parseMoney(extractedData.totals.subtotal);
+    const subtotalDiff = Math.abs(subtotal - computedSubtotal);
+    const subtotalTolerance = Math.max(1, roundMoney(computedSubtotal * 0.05));
+    if (subtotal <= 0 || subtotalDiff > subtotalTolerance) {
+      extractedData.totals.subtotal = computedSubtotal;
+    }
+  }
 }
 
 function convertToGBP(extractedData: ExtractedData, exchangeRates: { [key: string]: number }) {
@@ -213,11 +285,11 @@ function convertToGBP(extractedData: ExtractedData, exchangeRates: { [key: strin
       if (convertedLine > 0) {
         // Prefer the line total as source of truth when present
         lineTotalExVAT = convertedLine;
-        unitCostExVAT = Number((convertedLine / quantity).toFixed(2));
+        unitCostExVAT = roundMoney(convertedLine / quantity);
       } else if (convertedUnit > 0) {
         // Fallback: derive line total from unit cost
         unitCostExVAT = convertedUnit;
-        lineTotalExVAT = Number((convertedUnit * quantity).toFixed(2));
+        lineTotalExVAT = roundMoney(convertedUnit * quantity);
       } else {
         unitCostExVAT = 0;
         lineTotalExVAT = 0;
@@ -246,10 +318,11 @@ function convertToGBP(extractedData: ExtractedData, exchangeRates: { [key: strin
 // POST endpoint to extract data from invoice (without saving)
 export async function POST(request: NextRequest) {
   try {
-    const { user } = await requireAuth(request);
+    const { user, supabase } = await requireAuth(request);
 
-    // SECURITY: Rate limit – AI extraction is expensive, allow 10 requests/min
-    const blocked = applyRateLimit(request, user.id, { limit: 10, windowMs: 60_000 });
+    // SECURITY: Rate limit – AI extraction is expensive, but repeated review retries
+    // are part of normal use during PO import, so keep enough headroom for that flow.
+    const blocked = applyRateLimit(request, user.id, { limit: 30, windowMs: 60_000 });
     if (blocked) return blocked;
 
     // 1. Get API key
@@ -395,6 +468,7 @@ export async function POST(request: NextRequest) {
 
     // 6. Convert all monetary values from original currency to GBP using live exchange rates
     convertToGBP(extractedData, exchangeRates);
+    normalizeLineMath(extractedData);
 
     // 7. Sanity check: if sum of line totals is way off from the invoice total,
     //    the AI likely confused unit costs with line totals. Auto-correct.
@@ -417,15 +491,39 @@ export async function POST(request: NextRequest) {
         });
         // Recalculate subtotal
         const newSubtotal = extractedData.poLines.reduce((s, l) => s + l.lineTotalExVAT, 0);
-        extractedData.totals.subtotal = Number(newSubtotal.toFixed(2));
+        extractedData.totals.subtotal = roundMoney(newSubtotal);
       }
     }
 
     // 8. Return extracted data WITHOUT saving to database
     // Note: We allow incomplete data - user can fill in missing fields in the UI
+    const { data: products } = await supabase
+      .from('products')
+      .select('id, name, primarysku, suppliersku, barcodes, aliases')
+      .eq('user_id', user.id);
+
+    const typedProducts = (products || []) as MatchableProduct[];
+
+    const productOptions = typedProducts.map((product) => ({
+      id: product.id as string,
+      name: product.name as string,
+      primarySku: product.primarysku ?? null,
+      supplierSku: product.suppliersku ?? null,
+    }));
+
+    const lineMatches = suggestInvoiceLineMatches(
+      extractedData.poLines.map((line) => ({
+        description: line.description,
+        supplierSku: line.supplierSku ?? null,
+      })),
+      typedProducts,
+    );
+
     return NextResponse.json({
       success: true,
       data: extractedData,
+      lineMatches,
+      productOptions,
     });
   } catch (error) {
     console.error('Unexpected error:', error);

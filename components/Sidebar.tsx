@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
+import NotificationBell from './NotificationBell';
 
 interface NavItem {
   href: string;
@@ -159,9 +160,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   return (
     <aside
-      className={`hidden sm:flex sm:fixed sm:inset-y-0 sm:left-0 flex-col bg-white dark:bg-stone-900 border-r border-stone-200 dark:border-stone-800 text-stone-500 z-30 transition-[width] duration-200 ${
-        collapsed ? 'w-24' : 'w-48 lg:w-56'
-      }`}
+      className={`hidden sm:flex sm:fixed sm:inset-y-0 sm:left-0 flex-col bg-white dark:bg-stone-900 border-r border-stone-200 dark:border-stone-800 text-stone-500 z-30 transition-[width] duration-200 ${collapsed ? 'w-24' : 'w-48 lg:w-56'
+        }`}
     >
       <div className="relative flex flex-col items-center justify-between flex-1 py-4">
         <button
@@ -202,26 +202,22 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`w-full flex items-center transition-all duration-200 ${
-                    collapsed ? 'justify-center px-0 gap-0' : 'justify-start px-4 gap-2'
-                  }`}
+                  className={`w-full flex items-center transition-all duration-200 ${collapsed ? 'justify-center px-0 gap-0' : 'justify-start px-4 gap-2'
+                    }`}
                 >
                   <div
-                    className={`flex items-center justify-center transition-colors ${
-                      collapsed ? 'w-9 h-9 rounded-full' : 'w-10 h-10 rounded-xl'
-                    } ${
-                      active
+                    className={`flex items-center justify-center transition-colors ${collapsed ? 'w-9 h-9 rounded-full' : 'w-10 h-10 rounded-xl'
+                      } ${active
                         ? 'bg-amber-600 text-white shadow-sm'
                         : 'text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800'
-                    }`}
+                      }`}
                   >
                     <span className="sr-only">{item.label}</span>
                     {item.icon}
                   </div>
                   <span
-                    className={`text-sm font-semibold tracking-tight whitespace-nowrap transition-all duration-150 ${
-                      active ? 'text-stone-900 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'
-                    } ${collapsed ? 'hidden' : 'block'}`}
+                    className={`text-sm font-semibold tracking-tight whitespace-nowrap transition-all duration-150 ${active ? 'text-stone-900 dark:text-stone-100' : 'text-stone-500 dark:text-stone-400'
+                      } ${collapsed ? 'hidden' : 'block'}`}
                   >
                     {item.label}
                   </span>
@@ -245,13 +241,11 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 )}
                 <Link
                   href="/account"
-                  className={`flex items-center justify-center transition-colors ${
-                    collapsed ? 'w-9 h-9 rounded-full' : 'w-full px-3 py-2 rounded-xl gap-2'
-                  } ${
-                    isActivePath(pathname, '/account')
+                  className={`flex items-center justify-center transition-colors ${collapsed ? 'w-9 h-9 rounded-full' : 'w-full px-3 py-2 rounded-xl gap-2'
+                    } ${isActivePath(pathname, '/account')
                       ? 'bg-amber-600 text-white'
                       : 'text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800'
-                  }`}
+                    }`}
                   title="Account settings"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -262,11 +256,15 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     <span className="text-sm font-medium">Account</span>
                   )}
                 </Link>
+                <NotificationBell
+                  position="right-top"
+                  showLabel={!collapsed}
+                  label="Activity"
+                />
                 <button
                   onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-                  className={`flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                    collapsed ? 'w-9 h-9 rounded-full' : 'w-full px-3 py-2 rounded-xl gap-2'
-                  }`}
+                  className={`flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${collapsed ? 'w-9 h-9 rounded-full' : 'w-full px-3 py-2 rounded-xl gap-2'
+                    }`}
                   title={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                 >
                   {resolvedTheme === 'dark' ? (
@@ -284,9 +282,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 </button>
                 <button
                   onClick={handleSignOut}
-                  className={`flex items-center justify-center text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                    collapsed ? 'w-9 h-9 rounded-full' : 'w-full px-3 py-2 rounded-xl gap-2'
-                  }`}
+                  className={`flex items-center justify-center text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${collapsed ? 'w-9 h-9 rounded-full' : 'w-full px-3 py-2 rounded-xl gap-2'
+                    }`}
                   title="Sign out"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

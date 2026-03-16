@@ -12,16 +12,22 @@ interface AppShellProps {
 }
 
 export default function AppShell({ children }: AppShellProps) {
-  const [collapsed, setCollapsed] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('sl_sidebar_collapsed') === 'true';
-    }
-    return false;
-  });
+  const [collapsed, setCollapsed] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('sl_sidebar_collapsed', String(collapsed));
-  }, [collapsed]);
+    const stored = localStorage.getItem('sl_sidebar_collapsed');
+    if (stored !== null) {
+      setCollapsed(stored === 'true');
+    }
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (mounted) {
+      localStorage.setItem('sl_sidebar_collapsed', String(collapsed));
+    }
+  }, [collapsed, mounted]);
   const { user, loading } = useAuth();
   const pathname = usePathname();
 
@@ -78,9 +84,8 @@ export default function AppShell({ children }: AppShellProps) {
         onToggle={() => setCollapsed((prev) => !prev)}
       />
       <main
-        className={`flex-1 pb-20 sm:pb-0 pt-16 sm:pt-0 transition-[margin-left] duration-200 overflow-hidden min-w-0 flex flex-col ${
-          collapsed ? 'sm:ml-24' : 'sm:ml-48 lg:ml-56'
-        }`}
+        className={`flex-1 pb-20 sm:pb-0 pt-16 sm:pt-0 transition-[margin-left] duration-200 overflow-hidden min-w-0 flex flex-col ${collapsed ? 'sm:ml-24' : 'sm:ml-48 lg:ml-56'
+          }`}
       >
         {children}
       </main>

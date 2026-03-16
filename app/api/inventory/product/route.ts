@@ -1,8 +1,163 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
-import { deleteProductAndInventory } from '@/lib/db';
 import { applyRateLimit } from '@/lib/rate-limit';
 import { isValidUUID } from '@/lib/validation';
+import { clearCache } from '@/lib/cache';
+
+interface InventoryRow {
+  id: string;
+  productid: string;
+  quantityonhand: number | string | null;
+  averagecostgbp: number | string | null;
+  lastupdated: string;
+}
+
+interface SupplierRow {
+  id: string;
+  name: string;
+  address: string | null;
+  email: string | null;
+  phone: string | null;
+  created_at: string;
+}
+
+interface TransitRow {
+  id: string;
+  productid: string;
+  purchaseorderid: string;
+  polineid: string;
+  supplierid: string;
+  quantity: number | string | null;
+  remainingquantity: number | string | null;
+  unitcostgbp: number | string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface POLineRow {
+  id: string;
+  purchaseorderid: string;
+  description: string;
+  suppliersku: string | null;
+  quantity: number | string | null;
+  unitcostexvat: number | string | null;
+  linetotalexvat: number | string | null;
+}
+
+interface PurchaseOrderRow {
+  id: string;
+  supplierid: string;
+  invoicenumber: string | null;
+  invoicedate: string | null;
+  currency: string;
+  paymentterms: string | null;
+  imageurl: string | null;
+  imageurls: string[] | null;
+  created_at: string;
+}
+
+interface InvoiceRow {
+  id: string;
+  purchaseorderid: string;
+  supplierid: string;
+  invoicenumber: string | null;
+  invoicedate: string | null;
+  currency: string;
+  created_at: string;
+}
+
+interface IntegrationRow {
+  platform: string;
+  external_product_id: string | null;
+  external_variant_id: string | null;
+}
+
+interface ProductUpdatePayload {
+  name?: string;
+  primarysku?: string | null;
+  suppliersku?: string | null;
+  category?: string | null;
+  folderid?: string | null;
+  barcodes?: string[];
+  tags?: string[];
+  aliases?: string[];
+  imageurl?: string | null;
+  pricing_greenlight?: boolean;
+  shopify_bound?: boolean;
+  target_margin?: number | null;
+  pricing_sales_tax_pct?: number;
+  pricing_shopify_fee_pct?: number;
+  pricing_postage_packaging_gbp?: number;
+  updated_at?: string;
+}
+
+interface ProductInsertPayload {
+  pricing_greenlight: boolean;
+  target_margin: number | null;
+  pricing_sales_tax_pct: number;
+  pricing_shopify_fee_pct: number;
+  pricing_postage_packaging_gbp: number;
+  name: string;
+  primarysku: string | null;
+  suppliersku: string | null;
+  barcodes: string[];
+  aliases: string[];
+  supplierid: string | null;
+  category: string | null;
+  folderid: string | null;
+  tags: string[];
+  imageurl: string | null;
+  shopify_bound: boolean;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+async function ensureUniquePrimarySkuForUser(params: {
+  supabase: Awaited<ReturnType<typeof requireAuth>>['supabase'];
+  userId: string;
+  primarySku: string | null;
+  excludeProductId?: string;
+}): Promise<string | null> {
+  const primarySku = params.primarySku?.trim() || null;
+  if (!primarySku) return null;
+
+  let query = params.supabase
+    .from('products')
+    .select('id, name, primarysku')
+    .eq('user_id', params.userId)
+    .ilike('primarysku', primarySku);
+
+  if (params.excludeProductId) {
+    query = query.neq('id', params.excludeProductId);
+  }
+
+  const { data: conflict } = await query.maybeSingle();
+  if (conflict) {
+    return conflict.name || conflict.primarysku || primarySku;
+  }
+
+  return null;
+}
+
+async function validateFolderOwnership(params: {
+  supabase: Awaited<ReturnType<typeof requireAuth>>['supabase'];
+  userId: string;
+  folderId: string | null;
+}): Promise<boolean> {
+  if (!params.folderId) return true;
+  if (!isValidUUID(params.folderId)) return false;
+
+  const { data, error } = await params.supabase
+    .from('folders')
+    .select('id')
+    .eq('id', params.folderId)
+    .eq('user_id', params.userId)
+    .maybeSingle();
+
+  return !error && !!data;
+}
 
 // GET product + inventory + transit history for /inventory/[productId]
 export async function GET(request: NextRequest) {
@@ -26,6 +181,8 @@ export async function GET(request: NextRequest) {
       .from('products')
       .select('*')
       .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null)
       .single();
 
     if (productError || !productRow) {
@@ -36,24 +193,37 @@ export async function GET(request: NextRequest) {
     }
 
     // 2) Load related entities in parallel
-    const [inventoryRes, supplierRes, transitRes, poLinesRes, purchaseOrdersRes, invoicesRes] =
+    const emptySupplierResponse: { data: SupplierRow | null } = { data: null };
+    const [inventoryRes, supplierRes, transitRes, poLinesRes, purchaseOrdersRes, invoicesRes, integrationsRes] =
       await Promise.all([
         supabase.from('inventory').select('*').eq('productid', id),
         productRow.supplierid
           ? supabase.from('suppliers').select('*').eq('id', productRow.supplierid).single()
-          : Promise.resolve({ data: null } as any),
+          : Promise.resolve(emptySupplierResponse),
         supabase.from('transit').select('*').eq('productid', id),
         supabase.from('polines').select('*'),
         supabase.from('purchaseorders').select('*'),
         supabase.from('invoices').select('*'),
+        supabase
+          .from('product_integrations')
+          .select('*')
+          .eq('product_id', id)
+          .eq('user_id', user.id),
       ]);
 
-    const inventoryRows = inventoryRes.data || [];
-    const supplierRow = (supplierRes as any).data || null;
-    const transitRows = transitRes.data || [];
-    const poLineRows = poLinesRes.data || [];
-    const poRows = purchaseOrdersRes.data || [];
-    const invoiceRows = invoicesRes.data || [];
+    const inventoryRows: InventoryRow[] = inventoryRes.data || [];
+    const supplierRow = supplierRes.data || null;
+    const transitRows: TransitRow[] = transitRes.data || [];
+    const poLineRows: POLineRow[] = poLinesRes.data || [];
+    const poRows: PurchaseOrderRow[] = purchaseOrdersRes.data || [];
+    const invoiceRows: InvoiceRow[] = invoicesRes.data || [];
+    const integrationRows: IntegrationRow[] = integrationsRes.data || [];
+
+    const integrations = integrationRows.map((i) => ({
+      platform: i.platform,
+      externalProductId: i.external_product_id,
+      externalVariantId: i.external_variant_id,
+    }));
 
     // Map product to camelCase DTO
     const product = {
@@ -64,9 +234,16 @@ export async function GET(request: NextRequest) {
       barcodes: productRow.barcodes ?? [],
       aliases: productRow.aliases ?? [],
       supplierId: productRow.supplierid ?? null,
+      folderId: productRow.folderid ?? null,
       category: productRow.category ?? null,
       tags: productRow.tags ?? [],
       imageUrl: productRow.imageurl ?? null,
+      shopifyBound: !!productRow.shopify_bound,
+      pricingGreenlight: !!productRow.pricing_greenlight,
+      targetMargin: productRow.target_margin != null ? Number(productRow.target_margin) : null,
+      pricingSalesTaxPct: Number(productRow.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(productRow.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(productRow.pricing_postage_packaging_gbp ?? 0),
       createdAt: productRow.created_at,
       updatedAt: productRow.updated_at,
     };
@@ -95,7 +272,7 @@ export async function GET(request: NextRequest) {
       : null;
 
     const poLinesById = new Map(
-      poLineRows.map((l: any) => [
+      poLineRows.map((l) => [
         l.id,
         {
           id: l.id,
@@ -110,7 +287,7 @@ export async function GET(request: NextRequest) {
     );
 
     const posById = new Map(
-      poRows.map((po: any) => [
+      poRows.map((po) => [
         po.id,
         {
           id: po.id,
@@ -127,7 +304,7 @@ export async function GET(request: NextRequest) {
     );
 
     const invoicesByPoId = new Map(
-      invoiceRows.map((inv: any) => [
+      invoiceRows.map((inv) => [
         inv.purchaseorderid,
         {
           id: inv.id,
@@ -144,10 +321,10 @@ export async function GET(request: NextRequest) {
     const transit = transitRows
       .slice()
       .sort(
-        (a: any, b: any) =>
+        (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       )
-      .map((t: any) => {
+      .map((t) => {
         const transitRecord = {
           id: t.id,
           productId: t.productid,
@@ -174,9 +351,25 @@ export async function GET(request: NextRequest) {
         };
       });
 
+    // Prefer the PO line unit cost (editable) over transit.unitcostgbp, which can become stale.
+    const resolveUnitCost = (
+      transitRow: TransitRow,
+      poLine: { unitCostExVAT?: number } | null,
+    ): number => {
+      const poLineUnit = Number(poLine?.unitCostExVAT);
+      if (Number.isFinite(poLineUnit) && poLineUnit >= 0) {
+        return poLineUnit;
+      }
+      const transitUnit = Number(transitRow?.unitcostgbp);
+      if (Number.isFinite(transitUnit) && transitUnit >= 0) {
+        return transitUnit;
+      }
+      return 0;
+    };
+
     // Derive an expected average unit cost from on-hand + current POs (transit)
     const remainingTransit = transitRows.filter(
-      (t: any) => Number(t.remainingquantity ?? 0) > 0,
+      (t) => Number(t.remainingquantity ?? 0) > 0,
     );
 
     const onHandQty = inventory ? inventory.quantityOnHand : 0;
@@ -191,16 +384,7 @@ export async function GET(request: NextRequest) {
 
         const poLine = poLinesById.get(t.polineid) || null;
 
-        let rawUnitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(rawUnitCost) || rawUnitCost <= 0) {
-          rawUnitCost = Number(
-            poLine && typeof poLine.unitCostExVAT === 'number'
-              ? poLine.unitCostExVAT
-              : 0,
-          );
-        }
-
-        const unitCost = Number.isFinite(rawUnitCost) && rawUnitCost >= 0 ? rawUnitCost : 0;
+        const unitCost = resolveUnitCost(t, poLine);
 
         blendedTotalQty += qty;
         blendedTotalCost += qty * unitCost;
@@ -222,10 +406,7 @@ export async function GET(request: NextRequest) {
         if (!Number.isFinite(qty) || qty <= 0) continue;
 
         const poLine = poLinesById.get(t.polineid) || null;
-        let unitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(unitCost) || unitCost <= 0) {
-          unitCost = poLine ? Number(poLine.unitCostExVAT ?? 0) : 0;
-        }
+        const unitCost = resolveUnitCost(t, poLine);
         if (!Number.isFinite(unitCost) || unitCost <= 0) continue;
 
         fallbackTotalQty += qty;
@@ -245,7 +426,7 @@ export async function GET(request: NextRequest) {
         quantityOnHand: 0,
         averageCostGBP: displayAverageCost,
         lastUpdated: product.updatedAt || product.createdAt,
-      } as any;
+      };
     }
 
     return NextResponse.json({
@@ -255,6 +436,7 @@ export async function GET(request: NextRequest) {
         inventory,
         supplier,
         transit,
+        integrations,
       },
     });
   } catch (error) {
@@ -266,7 +448,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Update product metadata (name, SKUs, category, tags, barcodes)
+// Update product metadata (name, SKUs, folder, category, tags, barcodes)
 export async function PUT(request: NextRequest) {
   try {
     const { user, supabase } = await requireAuth(request);
@@ -285,7 +467,7 @@ export async function PUT(request: NextRequest) {
 
     const body = await request.json();
 
-    const updates: any = {};
+    const updates: ProductUpdatePayload = {};
 
     if (typeof body.name === 'string') {
       const name = body.name.trim();
@@ -314,6 +496,30 @@ export async function PUT(request: NextRequest) {
       const raw = body.category;
       const value = typeof raw === 'string' ? raw.trim() : '';
       updates.category = value.length > 0 ? value : null;
+    }
+
+    if ('folderId' in body) {
+      if (body.folderId === null || body.folderId === '') {
+        updates.folderid = null;
+      } else if (typeof body.folderId === 'string' && isValidUUID(body.folderId)) {
+        const valid = await validateFolderOwnership({
+          supabase,
+          userId: user.id,
+          folderId: body.folderId,
+        });
+        if (!valid) {
+          return NextResponse.json(
+            { error: 'folderId must be a valid folder owned by the current user' },
+            { status: 400 },
+          );
+        }
+        updates.folderid = body.folderId;
+      } else {
+        return NextResponse.json(
+          { error: 'folderId must be a valid UUID or null' },
+          { status: 400 },
+        );
+      }
     }
 
     if (Array.isArray(body.barcodes)) {
@@ -345,11 +551,82 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    if ('pricingGreenlight' in body) {
+      updates.pricing_greenlight = !!body.pricingGreenlight;
+    }
+
+    if ('shopifyBound' in body) {
+      updates.shopify_bound = !!body.shopifyBound;
+    }
+
+    if ('targetMargin' in body) {
+      if (body.targetMargin === null || body.targetMargin === '') {
+        updates.target_margin = null;
+      } else {
+        const parsed = Number(body.targetMargin);
+        if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 100) {
+          return NextResponse.json(
+            { error: 'targetMargin must be a number between 0 and 100' },
+            { status: 400 }
+          );
+        }
+        updates.target_margin = parsed;
+      }
+    }
+
+    if ('pricingSalesTaxPct' in body) {
+      const parsed = Number(body.pricingSalesTaxPct);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        return NextResponse.json(
+          { error: 'pricingSalesTaxPct must be between 0 and 100' },
+          { status: 400 }
+        );
+      }
+      updates.pricing_sales_tax_pct = parsed;
+    }
+
+    if ('pricingShopifyFeePct' in body) {
+      const parsed = Number(body.pricingShopifyFeePct);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        return NextResponse.json(
+          { error: 'pricingShopifyFeePct must be between 0 and 100' },
+          { status: 400 }
+        );
+      }
+      updates.pricing_shopify_fee_pct = parsed;
+    }
+
+    if ('pricingPostagePackagingGbp' in body) {
+      const parsed = Number(body.pricingPostagePackagingGbp);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return NextResponse.json(
+          { error: 'pricingPostagePackagingGbp must be a non-negative number' },
+          { status: 400 }
+        );
+      }
+      updates.pricing_postage_packaging_gbp = parsed;
+    }
+
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
         { error: 'No valid fields provided for update' },
         { status: 400 }
       );
+    }
+
+    if ('primarysku' in updates) {
+      const conflictingName = await ensureUniquePrimarySkuForUser({
+        supabase,
+        userId: user.id,
+        primarySku: updates.primarysku ?? null,
+        excludeProductId: id,
+      });
+      if (conflictingName) {
+        return NextResponse.json(
+          { error: `Primary SKU is already used by ${conflictingName}` },
+          { status: 409 },
+        );
+      }
     }
 
     updates.updated_at = new Date().toISOString();
@@ -358,6 +635,8 @@ export async function PUT(request: NextRequest) {
       .from('products')
       .update(updates)
       .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null)
       .select('*')
       .single();
 
@@ -377,11 +656,21 @@ export async function PUT(request: NextRequest) {
       barcodes: updatedRow.barcodes ?? [],
       aliases: updatedRow.aliases ?? [],
       supplierId: updatedRow.supplierid ?? null,
+      folderId: updatedRow.folderid ?? null,
       category: updatedRow.category ?? null,
       tags: updatedRow.tags ?? [],
+      imageUrl: updatedRow.imageurl ?? null,
+      shopifyBound: !!updatedRow.shopify_bound,
+      pricingGreenlight: !!updatedRow.pricing_greenlight,
+      targetMargin: updatedRow.target_margin != null ? Number(updatedRow.target_margin) : null,
+      pricingSalesTaxPct: Number(updatedRow.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(updatedRow.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(updatedRow.pricing_postage_packaging_gbp ?? 0),
       createdAt: updatedRow.created_at,
       updatedAt: updatedRow.updated_at,
     }
+
+    clearCache(`inventory_snapshot_v1_${user.id}`);
     return NextResponse.json({ success: true, data: { product } });
   } catch (error) {
     console.error('Update product error:', error);
@@ -421,7 +710,13 @@ export async function POST(request: NextRequest) {
         .filter((v) => v.length > 0);
     };
 
-    const insertPayload: any = {
+    const insertPayload: ProductInsertPayload = {
+      // Pricing settings defaults for margin automation
+      pricing_greenlight: !!body.pricingGreenlight,
+      target_margin: null as number | null,
+      pricing_sales_tax_pct: 0,
+      pricing_shopify_fee_pct: 0,
+      pricing_postage_packaging_gbp: 0,
       name: rawName,
       primarysku: normalizeOptionalString(body.primarySku),
       suppliersku: normalizeOptionalString(body.supplierSku),
@@ -429,12 +724,83 @@ export async function POST(request: NextRequest) {
       aliases: toStringArray(body.aliases),
       supplierid: normalizeOptionalString(body.supplierId) || null,
       category: normalizeOptionalString(body.category),
+      folderid: null,
       tags: toStringArray(body.tags),
       imageurl: normalizeOptionalString(body.imageUrl),
+      shopify_bound: !!body.shopifyBound,
       user_id: user.id,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
+
+    if (body.targetMargin !== null && body.targetMargin !== undefined && body.targetMargin !== '') {
+      const parsed = Number(body.targetMargin);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 100) {
+        return NextResponse.json(
+          { error: 'targetMargin must be a number between 0 and 100' },
+          { status: 400 },
+        );
+      }
+      insertPayload.target_margin = parsed;
+    }
+
+    const parsedTax = Number(body.pricingSalesTaxPct ?? 0);
+    const parsedFee = Number(body.pricingShopifyFeePct ?? 0);
+    const parsedPostage = Number(body.pricingPostagePackagingGbp ?? 0);
+    if (!Number.isFinite(parsedTax) || parsedTax < 0 || parsedTax > 100) {
+      return NextResponse.json(
+        { error: 'pricingSalesTaxPct must be between 0 and 100' },
+        { status: 400 },
+      );
+    }
+    if (!Number.isFinite(parsedFee) || parsedFee < 0 || parsedFee > 100) {
+      return NextResponse.json(
+        { error: 'pricingShopifyFeePct must be between 0 and 100' },
+        { status: 400 },
+      );
+    }
+    if (!Number.isFinite(parsedPostage) || parsedPostage < 0) {
+      return NextResponse.json(
+        { error: 'pricingPostagePackagingGbp must be a non-negative number' },
+        { status: 400 },
+      );
+    }
+    insertPayload.pricing_sales_tax_pct = parsedTax;
+    insertPayload.pricing_shopify_fee_pct = parsedFee;
+    insertPayload.pricing_postage_packaging_gbp = parsedPostage;
+
+    const conflictingName = await ensureUniquePrimarySkuForUser({
+      supabase,
+      userId: user.id,
+      primarySku: insertPayload.primarysku,
+    });
+    if (conflictingName) {
+      return NextResponse.json(
+        { error: `Primary SKU is already used by ${conflictingName}` },
+        { status: 409 },
+      );
+    }
+
+    if ('folderId' in body && body.folderId !== null && body.folderId !== '') {
+      if (typeof body.folderId !== 'string' || !isValidUUID(body.folderId)) {
+        return NextResponse.json(
+          { error: 'folderId must be a valid UUID or null' },
+          { status: 400 },
+        );
+      }
+      const valid = await validateFolderOwnership({
+        supabase,
+        userId: user.id,
+        folderId: body.folderId,
+      });
+      if (!valid) {
+        return NextResponse.json(
+          { error: 'folderId must be a valid folder owned by the current user' },
+          { status: 400 },
+        );
+      }
+      insertPayload.folderid = body.folderId;
+    }
 
     const { data: newProduct, error } = await supabase
       .from('products')
@@ -458,12 +824,21 @@ export async function POST(request: NextRequest) {
       barcodes: newProduct.barcodes ?? [],
       aliases: newProduct.aliases ?? [],
       supplierId: newProduct.supplierid ?? null,
+      folderId: newProduct.folderid ?? null,
       category: newProduct.category ?? null,
       tags: newProduct.tags ?? [],
       imageUrl: newProduct.imageurl ?? null,
+      shopifyBound: !!newProduct.shopify_bound,
+      pricingGreenlight: !!newProduct.pricing_greenlight,
+      targetMargin: newProduct.target_margin != null ? Number(newProduct.target_margin) : null,
+      pricingSalesTaxPct: Number(newProduct.pricing_sales_tax_pct ?? 0),
+      pricingShopifyFeePct: Number(newProduct.pricing_shopify_fee_pct ?? 0),
+      pricingPostagePackagingGbp: Number(newProduct.pricing_postage_packaging_gbp ?? 0),
       createdAt: newProduct.created_at,
       updatedAt: newProduct.updated_at,
     };
+
+    clearCache(`inventory_snapshot_v1_${user.id}`);
 
     return NextResponse.json({ success: true, data: { product } });
   } catch (error) {
@@ -495,6 +870,8 @@ export async function DELETE(request: NextRequest) {
       .from('products')
       .select('*')
       .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null)
       .single();
 
     if (fetchError || !product) {
@@ -504,16 +881,32 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    const result = await deleteProductAndInventory(id);
+    const { error: deleteError } = await supabase
+      .from('products')
+      .update({
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .is('deleted_at', null);
+
+    if (deleteError) {
+      console.error('Delete product error:', deleteError);
+      return NextResponse.json(
+        { error: 'Failed to move product to bin' },
+        { status: 500 }
+      );
+    }
+
+    clearCache(`inventory_snapshot_v1_${user.id}`);
 
     return NextResponse.json({
       success: true,
-      message: 'Product deleted successfully',
+      message: 'Product moved to bin',
       deleted: {
         productId: id,
         productName: product.name,
-        inventoryRows: result.deletedInventoryCount,
-        transitRows: result.deletedTransitCount,
       },
     });
   } catch (error) {

@@ -1,4 +1,5 @@
 import { serverSupabase as supabase } from './supabase-server';
+import { syncShopifyInventory, pushDraftProductToShopify, updateShopifyPrice } from './shopify/actions';
 
 // Define the database schema types
 export interface Supplier {
@@ -25,6 +26,10 @@ export interface PurchaseOrder {
   extras: number | null;
   vat: number | null;
   totalAmount: number | null;
+  trackingNumber: string | null;
+  trackingPostcode: string | null;
+  courier: string | null;
+  trackingStatus: string | null;
   createdAt: string;
 }
 
@@ -43,6 +48,99 @@ export interface Totals {
   subTotalExVAT: number | null;
   vatTotal: number | null;
   grandTotal: number | null;
+}
+
+interface PurchaseOrderUpdateRow {
+  supplierid?: string | null;
+  invoicenumber?: string | null;
+  invoicedate?: string | null;
+  currency?: string;
+  paymentterms?: string | null;
+  imageurl?: string | null;
+  imageurls?: string[] | null;
+  notes?: string | null;
+  subtotalexvat?: number | null;
+  extras?: number | null;
+  vat?: number | null;
+  totalamount?: number | null;
+  tracking_number?: string | null;
+  tracking_postcode?: string | null;
+  courier?: string | null;
+  tracking_status?: string | null;
+}
+
+interface POLineRow {
+  id: string;
+  purchaseorderid: string;
+  description: string;
+  suppliersku: string | null;
+  quantity: number | string | null;
+  unitcostexvat: number | string | null;
+  linetotalexvat: number | string | null;
+  rrp?: number | string | null;
+}
+
+interface POLineUpdateRow {
+  description?: string;
+  suppliersku?: string | null;
+  quantity?: number;
+  unitcostexvat?: number;
+  linetotalexvat?: number;
+  rrp?: number | null;
+}
+
+interface ExistingPurchaseOrderIdRow {
+  id: string;
+}
+
+interface ProductDbRow {
+  id: string;
+  name: string;
+  primarysku?: string | null;
+  suppliersku?: string | null;
+  barcodes?: string[] | null;
+  aliases?: string[] | null;
+  supplierid?: string | null;
+  category?: string | null;
+  tags?: string[] | null;
+  imageurl?: string | null;
+  shopify_bound?: boolean | null;
+  pricing_greenlight?: boolean | null;
+  target_margin?: number | string | null;
+  pricing_sales_tax_pct?: number | string | null;
+  pricing_shopify_fee_pct?: number | string | null;
+  pricing_postage_packaging_gbp?: number | string | null;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface InventoryDbRow {
+  id: string;
+  productid: string;
+  quantityonhand: number | string | null;
+  averagecostgbp: number | string | null;
+  lastupdated?: string;
+}
+
+interface TransitDbRow {
+  id: string;
+  productid: string;
+  purchaseorderid: string;
+  polineid: string;
+  supplierid: string;
+  quantity: number | string | null;
+  remainingquantity: number | string | null;
+  unitcostgbp: number | string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BarcodeProductRow {
+  id: string;
+  name: string;
+  barcodes: string[] | null;
 }
 
 
@@ -106,6 +204,10 @@ export async function createPurchaseOrder(
       extras: poData.extras ?? null,
       vat: poData.vat ?? null,
       totalamount: poData.totalAmount ?? null,
+      tracking_number: poData.trackingNumber ?? null,
+      tracking_postcode: poData.trackingPostcode ?? null,
+      courier: poData.courier ?? null,
+      tracking_status: poData.trackingStatus ?? 'pending',
       user_id: poData.user_id,
     })
     .select('id')
@@ -124,7 +226,7 @@ export async function updatePurchaseOrder(
   poId: string,
   updates: Partial<Omit<PurchaseOrder, 'id' | 'createdAt'>>
 ): Promise<PurchaseOrder | null> {
-  const mappedUpdates: any = {};
+  const mappedUpdates: PurchaseOrderUpdateRow = {};
   if (updates.supplierId !== undefined) mappedUpdates.supplierid = updates.supplierId;
   if (updates.invoiceNumber !== undefined) mappedUpdates.invoicenumber = updates.invoiceNumber;
   if (updates.invoiceDate !== undefined) mappedUpdates.invoicedate = updates.invoiceDate;
@@ -137,6 +239,10 @@ export async function updatePurchaseOrder(
   if (updates.extras !== undefined) mappedUpdates.extras = updates.extras;
   if (updates.vat !== undefined) mappedUpdates.vat = updates.vat;
   if (updates.totalAmount !== undefined) mappedUpdates.totalamount = updates.totalAmount;
+  if (updates.trackingNumber !== undefined) mappedUpdates.tracking_number = updates.trackingNumber;
+  if (updates.trackingPostcode !== undefined) mappedUpdates.tracking_postcode = updates.trackingPostcode;
+  if (updates.courier !== undefined) mappedUpdates.courier = updates.courier;
+  if (updates.trackingStatus !== undefined) mappedUpdates.tracking_status = updates.trackingStatus;
 
   const { data, error } = await supabase
     .from('purchaseorders')
@@ -175,7 +281,7 @@ export async function createPOLines(
     throw new Error(`Failed to create PO lines: ${error?.message}`);
   }
 
-  return data.map((row: any) => ({
+  return data.map((row: POLineRow) => ({
     id: row.id,
     purchaseOrderId: row.purchaseorderid,
     description: row.description,
@@ -192,7 +298,7 @@ export async function updatePOLine(
   lineId: string,
   updates: Partial<Omit<POLine, 'id' | 'purchaseOrderId'>>
 ): Promise<POLine | null> {
-  const mappedUpdates: any = {};
+  const mappedUpdates: POLineUpdateRow = {};
   if (updates.description !== undefined) mappedUpdates.description = updates.description;
   if (updates.supplierSku !== undefined) mappedUpdates.suppliersku = updates.supplierSku;
   if (updates.quantity !== undefined) mappedUpdates.quantity = updates.quantity;
@@ -263,14 +369,18 @@ export async function deleteSupplier(supplierId: string): Promise<{
 
   // Note: With cascade deletes, we don't need to manually delete POs and lines
   // Count deleted lines by querying poLines before deletion
-  const { count: deletedLines } = await supabase
-    .from('polines')
-    .select('*', { count: 'exact', head: true })
-    .in('purchaseorderid', (await supabase
-      .from('purchaseorders')
-      .select('id')
-      .eq('supplierid', supplierId)
-      .then(({ data }) => data?.map(po => po.id) || [])));
+  const { data: purchaseOrderIds } = await supabase
+    .from('purchaseorders')
+    .select('id')
+    .eq('supplierid', supplierId);
+
+  const poIds = (purchaseOrderIds || []).map((po: ExistingPurchaseOrderIdRow) => po.id);
+  const { count: deletedLines } = poIds.length > 0
+    ? await supabase
+        .from('polines')
+        .select('*', { count: 'exact', head: true })
+        .in('purchaseorderid', poIds)
+    : { count: 0 };
 
   return {
     success: true,
@@ -309,6 +419,12 @@ export async function deleteProductAndInventory(productId: string): Promise<{
 }
 
 // New inventory and product types
+export interface ProductIntegration {
+  platform: string;
+  externalProductId: string;
+  externalVariantId: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -320,8 +436,28 @@ export interface Product {
   category: string | null;
   tags: string[];
   imageUrl: string | null;
+  integrations?: ProductIntegration[];
   createdAt: string;
   updatedAt: string;
+}
+
+function mapProductRowToProduct(row: ProductDbRow | null): Product | null {
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    name: row.name,
+    primarySku: row.primarysku ?? null,
+    supplierSku: row.suppliersku ?? null,
+    barcodes: row.barcodes ?? [],
+    aliases: row.aliases ?? [],
+    supplierId: row.supplierid ?? null,
+    category: row.category ?? null,
+    tags: row.tags ?? [],
+    imageUrl: row.imageurl ?? null,
+    createdAt: row.created_at ?? '',
+    updatedAt: row.updated_at ?? '',
+  };
 }
 
 export interface InventoryRecord {
@@ -421,10 +557,41 @@ export interface Task {
   completedAt: string | null;
 }
 
+export interface ActivityLog {
+  id: string;
+  user_id: string;
+  type: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  is_read: boolean;
+  created_at: string;
+}
+
 export interface InventoryItemView {
   product: Product;
   inventory: InventoryRecord | null;
   quantityInTransit: number;
+}
+
+// Helper function to log activity
+export async function logActivity(params: {
+  userId: string;
+  type: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  const { error } = await supabase
+    .from('activity_log')
+    .insert({
+      user_id: params.userId,
+      type: params.type,
+      message: params.message,
+      metadata: params.metadata || {},
+    });
+
+  if (error) {
+    console.error('Failed to log activity:', error.message);
+  }
 }
 
 // Updated database schema including inventory-related collections
@@ -437,6 +604,7 @@ export interface DatabaseSchema {
   transit: TransitRecord[];
   invoices: Invoice[];
   tasks: Task[];
+  activity_log: ActivityLog[];
 }
 
 
@@ -454,16 +622,19 @@ export async function findDuplicatePurchaseOrders(
   supplierName: string,
   invoiceNumber: string | null,
   invoiceDate: string | null,
-  poLines: Array<{ description: string; quantity: number; unitCostExVAT: number }>
+  poLines: Array<{ description: string; quantity: number; unitCostExVAT: number }>,
+  userId: string
 ): Promise<DuplicateMatch[]> {
   const duplicates: DuplicateMatch[] = [];
 
-  // Find supplier by name (case-insensitive)
+  // Find supplier by name (case-insensitive) for this user
   const { data: supplier } = await supabase
     .from('suppliers')
     .select('*')
     .ilike('name', supplierName)
-    .single();
+    .eq('user_id', userId)
+    .limit(1)
+    .maybeSingle();
 
   if (!supplier) {
     // No supplier found, so no duplicates possible
@@ -471,10 +642,12 @@ export async function findDuplicatePurchaseOrders(
   }
 
   // Get all purchase orders for this supplier
+  // We explicitly check user_id on purchaseorders too just in case supplier.id is shared somehow
   const { data: supplierPOs } = await supabase
     .from('purchaseorders')
     .select('*')
-    .eq('supplierid', supplier.id);
+    .eq('supplierid', supplier.id)
+    .eq('user_id', userId);
 
   if (!supplierPOs) return [];
 
@@ -483,14 +656,14 @@ export async function findDuplicatePurchaseOrders(
     let matchScore = 0;
 
     // Check invoice number match (strong indicator)
-    if (invoiceNumber && po.invoicenumber &&
+    if (invoiceNumber && po.invoicenumber && invoiceNumber.trim() !== '' && po.invoicenumber.trim() !== '' &&
         invoiceNumber.toLowerCase() === po.invoicenumber.toLowerCase()) {
       matchReasons.push('Same invoice number');
       matchScore += 50;
     }
 
     // Check invoice date match
-    if (invoiceDate && po.invoicedate && invoiceDate === po.invoicedate) {
+    if (invoiceDate && po.invoicedate && invoiceDate.trim() !== '' && po.invoicedate.trim() !== '' && invoiceDate === po.invoicedate) {
       matchReasons.push('Same invoice date');
       matchScore += 20;
     }
@@ -511,12 +684,12 @@ export async function findDuplicatePurchaseOrders(
       // Check for matching line items
       let matchingLines = 0;
       for (const newLine of poLines) {
-        const similarLine = existingLines.find(
+        const similarLine = (existingLines as POLineRow[]).find(
           (existingLine) =>
             existingLine.description.toLowerCase().includes(newLine.description.toLowerCase().substring(0, 20)) ||
             newLine.description.toLowerCase().includes(existingLine.description.toLowerCase().substring(0, 20)) ||
-            (Math.abs(existingLine.unitCostExVAT - newLine.unitCostExVAT) < 0.01 &&
-             existingLine.quantity === newLine.quantity)
+            (Math.abs(Number(existingLine.unitcostexvat ?? 0) - newLine.unitCostExVAT) < 0.01 &&
+             Number(existingLine.quantity ?? 0) === newLine.quantity)
         );
         if (similarLine) {
           matchingLines++;
@@ -564,11 +737,39 @@ function computeTokenSimilarity(aTokens: string[], bTokens: string[]): number {
   const aSet = new Set(aTokens);
   const bSet = new Set(bTokens);
   let intersection = 0;
-  for (const token of aSet) {
+  aSet.forEach((token) => {
     if (bSet.has(token)) intersection++;
-  }
+  });
   const union = new Set([...aTokens, ...bTokens]).size;
   return union === 0 ? 0 : intersection / union;
+}
+
+function generateInternalSku(usedSkuLower: Set<string>): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let suffix = '';
+    for (let i = 0; i < 8; i++) {
+      suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+
+    const candidate = `SL-${suffix}`;
+    const key = candidate.toLowerCase();
+    if (!usedSkuLower.has(key)) {
+      usedSkuLower.add(key);
+      return candidate;
+    }
+  }
+
+  const fallback = `SL-${Date.now().toString(36).toUpperCase()}`;
+  usedSkuLower.add(fallback.toLowerCase());
+  return fallback;
+}
+
+export interface POLineReviewDecision {
+  action: 'link' | 'create';
+  targetProductId?: string | null;
+  shopifyBound?: boolean;
 }
 
 // Sync purchase order lines into products + transit records
@@ -577,6 +778,10 @@ export async function syncInventoryFromPurchaseOrder(params: {
   purchaseOrderId: string;
   poLines: POLine[];
   user_id: string;
+  lineReviewDecisions?: Array<{
+    poLineId: string;
+    decision: POLineReviewDecision;
+  }>;
 }): Promise<{
   productsCreated: number;
   productsMatched: number;
@@ -586,12 +791,26 @@ export async function syncInventoryFromPurchaseOrder(params: {
   let productsMatched = 0;
   let transitCreated = 0;
 
-  const { data: products } = await supabase
+  const { data: rawProducts } = await supabase
     .from('products')
-    .select('*');
+    .select('*')
+    .eq('user_id', params.user_id);
 
-  if (!products) {
+  if (!rawProducts) {
     throw new Error('Failed to fetch products');
+  }
+
+  const products: ProductDbRow[] = rawProducts;
+
+  const lineDecisions = new Map(
+    (params.lineReviewDecisions || []).map((item) => [item.poLineId, item.decision]),
+  );
+  const usedSkuLower = new Set<string>();
+  for (const product of products) {
+    const primarySku = typeof product.primarysku === 'string' ? product.primarysku.trim() : '';
+    if (primarySku) {
+      usedSkuLower.add(primarySku.toLowerCase());
+    }
   }
 
   for (const line of params.poLines) {
@@ -601,30 +820,43 @@ export async function syncInventoryFromPurchaseOrder(params: {
     }
 
     const supplierSku = line.supplierSku?.trim() || null;
+    const reviewDecision = lineDecisions.get(line.id) || null;
 
     // 1. Try exact SKU/barcode match first
     let matchedProduct: Product | null = null;
-    if (supplierSku) {
+    if (reviewDecision?.action === 'link' && reviewDecision.targetProductId) {
+      matchedProduct =
+        mapProductRowToProduct(products.find((product) => product.id === reviewDecision.targetProductId) || null);
+      if (!matchedProduct) {
+        console.error(
+          `Failed to find reviewed product ${reviewDecision.targetProductId} for PO line ${line.id}`,
+        );
+        continue;
+      }
+    } else if (supplierSku) {
       const skuLower = supplierSku.toLowerCase();
       matchedProduct =
-        products.find(
-          (p) =>
-            p.primarySku?.toLowerCase() === skuLower ||
-            p.supplierSku?.toLowerCase() === skuLower ||
-            (p.barcodes || []).some((code: string) => code.toLowerCase() === skuLower)
-        ) || null;
+        mapProductRowToProduct(
+          products.find((p) => {
+            const pSku = (p.primarysku || '').toLowerCase();
+            const sSku = (p.suppliersku || '').toLowerCase();
+            const barcodes = p.barcodes || [];
+            return pSku === skuLower || sSku === skuLower || barcodes.some((b) => b.toLowerCase() === skuLower);
+          }) || null,
+        );
     }
 
     // 2. Fuzzy match on description if no SKU match
-    if (!matchedProduct) {
+    if (!matchedProduct && !reviewDecision) {
       const lineTokens = normalizeTextForMatch(rawDescription);
       let bestScore = 0;
       for (const candidate of products) {
         const nameTokens = normalizeTextForMatch(candidate.name || '');
         let score = computeTokenSimilarity(lineTokens, nameTokens);
 
-        if ((candidate.aliases || []).length > 0) {
-          for (const alias of candidate.aliases) {
+        const candidateAliases = candidate.aliases || [];
+        if (candidateAliases.length > 0) {
+          for (const alias of candidateAliases) {
             const aliasTokens = normalizeTextForMatch(alias);
             const aliasScore = computeTokenSimilarity(lineTokens, aliasTokens);
             if (aliasScore > score) {
@@ -634,13 +866,23 @@ export async function syncInventoryFromPurchaseOrder(params: {
         }
 
         if (score > bestScore) {
-          bestScore = score;
-          matchedProduct = candidate;
+          // STRICT RULE: If both have SKUs and they are different, NEVER match fuzzy
+          const candPSku = (candidate.primarysku || '').toLowerCase();
+          const candSSku = (candidate.suppliersku || '').toLowerCase();
+          
+          const skuLower = (supplierSku || '').toLowerCase();
+          const hasDifferentSku = skuLower && (candPSku || candSSku) && 
+                                (candPSku !== skuLower && candSSku !== skuLower);
+
+          if (!hasDifferentSku) {
+            bestScore = score;
+            matchedProduct = mapProductRowToProduct(candidate);
+          }
         }
       }
 
-      // Require a reasonable similarity threshold to avoid bad matches
-      if (bestScore < 0.5) {
+      // Require a high similarity threshold to avoid bad matches (like different variants of the same set)
+      if (bestScore < 0.7) {
         matchedProduct = null;
       }
     }
@@ -648,7 +890,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
     const now = new Date().toISOString();
     let product: Product;
 
-    if (matchedProduct) {
+    if (matchedProduct && reviewDecision?.action !== 'create') {
       productsMatched++;
       // Update aliases/supplier linkage if needed
       const updatedAliases = matchedProduct.aliases || [];
@@ -668,12 +910,19 @@ export async function syncInventoryFromPurchaseOrder(params: {
       }
       product = matchedProduct;
     } else {
+      let resolvedPrimarySku = supplierSku;
+      if (!resolvedPrimarySku || usedSkuLower.has(resolvedPrimarySku.toLowerCase())) {
+        resolvedPrimarySku = generateInternalSku(usedSkuLower);
+      } else {
+        usedSkuLower.add(resolvedPrimarySku.toLowerCase());
+      }
+
       // Create new product
       const { data: newProduct, error: insertError } = await supabase
         .from('products')
         .insert({
           name: rawDescription,
-          primarysku: supplierSku,
+          primarysku: resolvedPrimarySku,
           suppliersku: supplierSku,
           barcodes: [],
           aliases: [rawDescription],
@@ -681,6 +930,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
           category: null,
           tags: [],
           imageurl: null,
+          shopify_bound: !!reviewDecision?.shopifyBound,
           user_id: params.user_id,
         })
         .select()
@@ -690,7 +940,7 @@ export async function syncInventoryFromPurchaseOrder(params: {
         console.error('Failed to create product:', insertError?.message || 'Unknown error');
         continue;
       }
-      products.push(newProduct);
+      products.push(newProduct as ProductDbRow);
       productsCreated++;
       product = newProduct;
     }
@@ -726,6 +976,22 @@ export async function syncInventoryFromPurchaseOrder(params: {
     transitCreated++;
   }
 
+  // Log the import activity
+  if (params.poLines.length > 0) {
+    await logActivity({
+      userId: params.user_id,
+      type: 'import',
+      message: `Imported ${params.poLines.length} line items for PO ${params.purchaseOrderId}`,
+      metadata: {
+        purchaseOrderId: params.purchaseOrderId,
+        supplierId: params.supplierId,
+        productsCreated,
+        productsMatched,
+        transitCreated,
+      },
+    });
+  }
+
   return {
     productsCreated,
     productsMatched,
@@ -744,32 +1010,21 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
     supabase.from('polines').select('id, unitcostexvat, purchaseorderid'),
   ]);
 
-  const rawProducts = productsRes.data || [];
-  const rawInventory = inventoryRes.data || [];
-  const rawTransit = transitRes.data || [];
-  const rawPoLines = poLinesRes.data || [];
+  const rawProducts: ProductDbRow[] = productsRes.data || [];
+  const rawInventory: InventoryDbRow[] = inventoryRes.data || [];
+  const rawTransit: TransitDbRow[] = transitRes.data || [];
+  const rawPoLines: POLineRow[] = poLinesRes.data || [];
 
-  const poLinesById = new Map<string, any>(
-    rawPoLines.map((l: any) => [l.id as string, l]),
+  const poLinesById = new Map<string, POLineRow>(
+    rawPoLines.map((l) => [l.id, l]),
   );
 
-  const typedProducts: Product[] = rawProducts.map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    primarySku: p.primarysku ?? null,
-    supplierSku: p.suppliersku ?? null,
-    barcodes: p.barcodes ?? [],
-    aliases: p.aliases ?? [],
-    supplierId: p.supplierid ?? null,
-    category: p.category ?? null,
-    tags: p.tags ?? [],
-    imageUrl: p.imageurl ?? null,
-    createdAt: p.created_at,
-    updatedAt: p.updated_at,
-  }));
+  const typedProducts: Product[] = rawProducts
+    .map((p) => mapProductRowToProduct(p))
+    .filter((product): product is Product => product !== null);
 
   const items: InventoryItemView[] = typedProducts.map((product) => {
-    const invRow = rawInventory.find((i: any) => i.productid === product.id) || null;
+    const invRow = rawInventory.find((i) => i.productid === product.id) || null;
 
     let inventory: InventoryRecord | null = invRow
       ? {
@@ -777,19 +1032,32 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
           productId: invRow.productid,
           quantityOnHand: Number(invRow.quantityonhand ?? 0),
           averageCostGBP: Number(invRow.averagecostgbp ?? 0),
-          lastUpdated: invRow.lastupdated,
+          lastUpdated: invRow.lastupdated || product.updatedAt,
         }
       : null;
 
-    const productTransit = rawTransit.filter((t: any) => t.productid === product.id);
+    const productTransit = rawTransit.filter((t) => t.productid === product.id);
     const remainingTransit = productTransit.filter(
-      (t: any) => Number(t.remainingquantity ?? 0) > 0,
+      (t) => Number(t.remainingquantity ?? 0) > 0,
     );
 
     const quantityInTransit = remainingTransit.reduce(
-      (sum: number, t: any) => sum + Number(t.remainingquantity ?? 0),
+      (sum, t) => sum + Number(t.remainingquantity ?? 0),
       0,
     );
+
+    // Prefer editable PO line pricing over transit.unitcostgbp, which can become stale.
+    const resolveUnitCost = (transitRow: TransitDbRow, poLine: POLineRow | null): number => {
+      const poLineUnit = Number(poLine?.unitcostexvat);
+      if (Number.isFinite(poLineUnit) && poLineUnit >= 0) {
+        return poLineUnit;
+      }
+      const transitUnit = Number(transitRow?.unitcostgbp);
+      if (Number.isFinite(transitUnit) && transitUnit >= 0) {
+        return transitUnit;
+      }
+      return 0;
+    };
 
     // Derive expected average unit cost from on-hand + what is currently on order (transit)
     const onHandQty = inventory ? inventory.quantityOnHand : 0;
@@ -804,12 +1072,7 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
 
         const poLine = poLinesById.get(t.polineid as string) || null;
 
-        let rawUnitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(rawUnitCost) || rawUnitCost <= 0) {
-          rawUnitCost = Number(poLine?.unitcostexvat ?? 0);
-        }
-
-        const unitCost = Number.isFinite(rawUnitCost) && rawUnitCost >= 0 ? rawUnitCost : 0;
+        const unitCost = resolveUnitCost(t, poLine);
 
         blendedTotalQty += qty;
         blendedTotalCost += qty * unitCost;
@@ -831,10 +1094,7 @@ export async function getInventorySnapshot(): Promise<InventoryItemView[]> {
         if (!Number.isFinite(qty) || qty <= 0) continue;
 
         const poLine = poLinesById.get(t.polineid as string) || null;
-        let unitCost = Number(t.unitcostgbp ?? 0);
-        if (!Number.isFinite(unitCost) || unitCost <= 0) {
-          unitCost = Number(poLine?.unitcostexvat ?? 0);
-        }
+        const unitCost = resolveUnitCost(t, poLine);
         if (!Number.isFinite(unitCost) || unitCost <= 0) continue;
 
         fallbackTotalQty += qty;
@@ -882,8 +1142,9 @@ export async function receiveStockForProduct(params: {
   productId: string;
   quantity: number;
   poLineId?: string;
+  user_id?: string;
 }): Promise<ReceiveStockResult> {
-  const { productId, quantity, poLineId } = params;
+  const { productId, quantity, poLineId, user_id } = params;
 
   if (!productId) {
     throw new Error('productId is required');
@@ -906,7 +1167,7 @@ export async function receiveStockForProduct(params: {
   const now = new Date().toISOString();
 
   // Get or create inventory record (raw DB row)
-  let inventoryRecord: any = null;
+  let inventoryRecord: InventoryDbRow | null = null;
   const { data: existingInventory } = await supabase
     .from('inventory')
     .select('*')
@@ -922,6 +1183,7 @@ export async function receiveStockForProduct(params: {
         productid: productId,
         quantityonhand: 0,
         averagecostgbp: 0,
+        ...(user_id ? { user_id } : {}),
       })
       .select()
       .single();
@@ -1017,6 +1279,83 @@ export async function receiveStockForProduct(params: {
     })
     .eq('id', inventoryRecord.id);
 
+  // --- SHOPIFY SYNC & LINK ENGINE ---
+  try {
+    const { data: integration } = await supabase
+      .from('product_integrations')
+      .select('*')
+      .eq('user_id', product.user_id)
+      .eq('product_id', productId)
+      .eq('platform', 'shopify')
+      .maybeSingle();
+
+    if (integration) {
+      // 1. Sync Inventory to Shopify
+      if (receivedQuantity !== 0 && integration.external_inventory_item_id) {
+        await syncShopifyInventory(integration.external_inventory_item_id, receivedQuantity, product.user_id);
+      }
+      
+      // 2. Push Price if Greenlighted (Margin Engine)
+      if (product.pricing_greenlight && product.target_margin) {
+        const targetMarginPct = Number(product.target_margin);
+        if (targetMarginPct > 0 && targetMarginPct < 100) {
+          // Margin model:
+          // requiredNet = (unitCost + fixedPerUnitCost) / (1 - targetMargin)
+          // sellingPrice = requiredNet / (1 - taxPct - feePct)
+          const taxPct = Number(product.pricing_sales_tax_pct ?? 0);
+          const feePct = Number(product.pricing_shopify_fee_pct ?? 0);
+          const fixedPerUnitCost = Number(product.pricing_postage_packaging_gbp ?? 0);
+
+          const marginRate = targetMarginPct / 100;
+          const taxRate = Math.max(0, taxPct) / 100;
+          const feeRate = Math.max(0, feePct) / 100;
+          const variableDeductions = taxRate + feeRate;
+
+          if (marginRate >= 1 || variableDeductions >= 1) {
+            throw new Error('Invalid pricing settings: rates must total below 100%');
+          }
+
+          const unitCost = Math.max(0, newAvg) + Math.max(0, fixedPerUnitCost);
+          const requiredNet = unitCost / (1 - marginRate);
+          const newPrice = requiredNet / (1 - variableDeductions);
+          const formattedPrice = Math.max(0, newPrice).toFixed(2);
+          
+          if (integration.external_variant_id) {
+            await updateShopifyPrice(integration.external_variant_id, formattedPrice, product.user_id);
+          }
+        }
+      }
+    } else if (product.shopify_bound) {
+      // 3. Draft Push: Product doesn't exist on Shopify, so create it
+      // Ensure SKU exists
+      let sku = product.primarysku;
+      if (!sku) {
+        sku = 'SL-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+        await supabase.from('products').update({ primarysku: sku }).eq('id', productId);
+      }
+      
+      const newShopifyIds = await pushDraftProductToShopify(product, sku, product.user_id);
+      
+      // Save the new link
+      await supabase.from('product_integrations').insert({
+        user_id: product.user_id,
+        product_id: productId,
+        platform: 'shopify',
+        external_product_id: newShopifyIds.productId,
+        external_variant_id: newShopifyIds.variantId,
+        external_inventory_item_id: newShopifyIds.inventoryItemId
+      });
+      
+      // Push the inventory to the newly created item
+      if (receivedQuantity !== 0) {
+         await syncShopifyInventory(newShopifyIds.inventoryItemId, receivedQuantity, product.user_id);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to sync receiving event to Shopify:', err);
+    // We do not throw here to prevent rolling back the local StockLane receiving if Shopify fails
+  }
+
   return {
     productId,
     receivedQuantity,
@@ -1054,7 +1393,7 @@ export async function addBarcodeToProduct(
   }
 
   if (existingWithBarcode && existingWithBarcode.length > 0) {
-    const conflicting = existingWithBarcode.find((p: any) => p.id !== productId);
+    const conflicting = (existingWithBarcode as BarcodeProductRow[]).find((p) => p.id !== productId);
     if (conflicting) {
       const otherName = conflicting.name || conflicting.id;
       throw new Error(`This barcode is already linked to another product: "${otherName}"`);

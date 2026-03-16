@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 let supabaseInstance: ReturnType<typeof createClient> | null = null;
 
 function createBrowserSupabase() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
   // SECURITY: Read credentials from environment variables only – never hardcode keys
   if (!supabaseUrl || !supabaseAnonKey) {

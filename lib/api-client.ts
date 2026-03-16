@@ -34,5 +34,6 @@ export async function authenticatedFetch(url: string, options: RequestInit = {})
   return fetch(url, {
     ...options,
     headers,
+    cache: options.cache ?? 'no-store',
   });
 }

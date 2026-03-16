@@ -35,8 +35,10 @@ Input: an invoice (PDF text). Output: a single valid JSON object in this schema:
       "description": "string",
       "supplierSku": "string | null",
       "quantity": number,
+      "packSize": "number | null (e.g. 10 if CDU (10), 12 if Case (12))",
       "unitCostExVAT": number,
-      "lineTotalExVAT": number
+      "lineTotalExVAT": number,
+      "rrp": "number | null"
     }
   ],
   "totals": {
@@ -52,8 +54,17 @@ Rules:
 - **CRITICAL: If the invoice is NOT in GBP, you MUST convert ALL monetary values (unitCostExVAT, lineTotalExVAT, subTotalExVAT, vatTotal, grandTotal) to GBP using current exchange rates.**
 - Store the original currency in "originalCurrency" field.
 - After conversion, all prices should be in GBP.
+- **PACK SIZE & UNIT EXPANSION**:
+  - Many invoices list "Case quantity" or "Display items".
+  - If you see "(12 units)", "CDU (10)", "Box of 6", OR if the invoice has a "Units per pack" column, put that number in "packSize".
+  - **IMPORTANT**: Your "quantity" should represent the number of INDIVIDUAL UNITS. 
+  - **Example**: If the invoice says "1 Display" and "CDU (10)", "quantity" should be 10 and "packSize" should be 10.
+  - **Example**: If the invoice says "4 Displays" and "CDU (10)", "quantity" should be 40 and "packSize" should be 10.
+  - If "quantity" is expanded, "unitCostExVAT" must be (lineTotal / expanded quantity).
+- **RRP FIELD**:
+  - ONLY extract the Recommended Retail Price if it's a currency value (e.g. 12.99).
+  - **NEVER** put pack size (10, 12, etc.) in the RRP field unless it is explicitly labeled as the RRP price.
 - If a field is missing, return null.
-- Merge lines across multiple pages.
 
 Here is the invoice text:
 
@@ -77,10 +88,70 @@ interface ExtractedData {
     description: string;
     supplierSku: string | null;
     quantity: number;
+    packSize?: number | null;
     unitCostExVAT: number;
     lineTotalExVAT: number;
+    rrp: number | null;
   }>;
-  totals: Totals;
+  totals?: {
+    subTotalExVAT: number | null;
+    vatTotal: number | null;
+    grandTotal: number | null;
+  };
+}
+
+function roundMoney(val: number): number {
+  return Math.round(val * 100) / 100;
+}
+
+function normalizeLineMath(lines: ExtractedData['poLines']): ExtractedData['poLines'] {
+  return (lines || []).map((line) => {
+    let quantity = typeof line.quantity === 'number' && line.quantity > 0 ? line.quantity : 0;
+    let unitCostExVAT = typeof line.unitCostExVAT === 'number' ? line.unitCostExVAT : 0;
+    let lineTotalExVAT = typeof line.lineTotalExVAT === 'number' ? line.lineTotalExVAT : 0;
+    let rrp = typeof line.rrp === 'number' ? line.rrp : null;
+    const packSize = typeof line.packSize === 'number' ? line.packSize : 1;
+
+    // --- HEURISTIC SAFETY NET ---
+    // Detect if AI hallucinated a multiplier as an RRP (very common mistake for Gemini)
+    // Common pack sizes: 6, 10, 12, 18, 24, 30, 36, 40, 50, 60, 100.
+    const commonMultipliers = [6, 8, 10, 12, 18, 24, 30, 36, 40, 50, 60, 100];
+    const desc = (line.description || '').toLowerCase();
+    const hasPackKeywords = desc.includes('cdu') || desc.includes('box') || desc.includes('pack') || 
+                            desc.includes('display') || desc.includes('units') || desc.includes('(') ||
+                            desc.includes('collection');
+
+    if (rrp !== null && commonMultipliers.includes(rrp) && quantity <= 10 && hasPackKeywords) {
+      // If our heuristic catches a likely multiplier sitting in RRP, expand quantity
+      if (lineTotalExVAT > 0) {
+        const isTotalPriceInUnit = Math.abs(unitCostExVAT - lineTotalExVAT) < 0.05;
+        // If the unit price is actually the box price (matches total), or quantity is 1
+        if (isTotalPriceInUnit || quantity < rrp) {
+          quantity = quantity * rrp;
+          unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+          rrp = null; // Clear it so it doesn't pollute the actual RRP data
+        }
+      }
+    }
+
+    // Ensure rounding and consistency
+    if (quantity > 0) {
+      if (lineTotalExVAT > 0) {
+        // Line total is always the source of truth for cost
+        unitCostExVAT = roundMoney(lineTotalExVAT / quantity);
+      } else if (unitCostExVAT > 0) {
+        lineTotalExVAT = roundMoney(unitCostExVAT * quantity);
+      }
+    }
+
+    return {
+      ...line,
+      quantity: Math.max(0, quantity),
+      unitCostExVAT: roundMoney(Math.max(0, unitCostExVAT)),
+      lineTotalExVAT: roundMoney(Math.max(0, lineTotalExVAT)),
+      rrp: rrp
+    };
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -219,6 +290,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    extractedData.poLines = normalizeLineMath(extractedData.poLines);
+
     // 7. Save to lowdb database
     try {
       // Create or find supplier
@@ -245,6 +318,10 @@ export async function POST(request: NextRequest) {
         extras: null,
         vat: extractedData.totals?.vatTotal ?? null,
         totalAmount: extractedData.totals?.grandTotal ?? null,
+        trackingNumber: null,
+        trackingPostcode: null,
+        courier: null,
+        trackingStatus: 'pending',
         user_id: user.id,
       });
 
@@ -281,7 +358,7 @@ export async function POST(request: NextRequest) {
           quantity: line.quantity,
           unitCostExVAT: line.unitCostExVAT,
           lineTotalExVAT: line.lineTotalExVAT,
-          rrp: null, // RRP not extracted from AI yet, will be added later
+          rrp: line.rrp ?? null,
         }))
       );
 
