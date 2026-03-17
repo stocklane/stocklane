@@ -138,34 +138,89 @@ export default function InventoryPage() {
   const [syncingShopify, setSyncingShopify] = useState(false);
 
   useEffect(() => {
-    if (!folderMenu.open && !canvasMenu.open && !productMenu.open) return;
+    const closeAll = () => {
+      setFolderMenu({ open: false });
+      setCanvasMenu({ open: false });
+      setProductMenu({ open: false });
+    };
 
-    const close = () => setFolderMenu({ open: false });
-    const closeCanvas = () => setCanvasMenu({ open: false });
-    const closeProduct = () => setProductMenu({ open: false });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        close();
-        closeCanvas();
-        closeProduct();
+        closeAll();
       }
     };
 
-    const closeAll = () => {
-      close();
-      closeCanvas();
-      closeProduct();
+    const handleGlobalContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+
+      // Always close any active custom menus on right-click to ensure state is clean
+      // We do this via the setters below.
+
+      // EXCLUSIONS (Where we want the BROWSER'S default menu):
+      // 1. Inputs and editable areas
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable ||
+        target.closest('input') ||
+        target.closest('textarea')
+      ) {
+        closeAll();
+        return;
+      }
+
+      // 2. UI Shell Elements (Sidebar, etc.) - If outside main, let browser menu show
+      if (!target.closest('main')) {
+        closeAll();
+        return;
+      }
+
+      // 3. Custom Entries (Products/Folders) - They have their own reactive handlers with stopPropagation.
+      // If the event reaches this global window listener, it's either a gap or was unhandled.
+      if (
+        target.closest('[data-folder-entry="true"]') ||
+        target.closest('[data-product-entry="true"]')
+      ) {
+        // We close any open canvas menu, but don't prevent default here as the 
+        // specialized handler should have already done it.
+        if (!target.closest('[role="menu"]')) {
+           setCanvasMenu({ open: false });
+        }
+        return;
+      }
+
+      // 4. Clicking ON the custom menu itself - Prevent browser menu, don't move anything
+      if (target.closest('[role="menu"]') || target.closest('.fixed.z-50')) {
+        e.preventDefault();
+        return;
+      }
+
+      // If we got here, it's a click on the "canvas" background, header, or gap
+      e.preventDefault();
+      
+      const x = e.clientX;
+      const y = e.clientY;
+
+      setFolderMenu({ open: false });
+      setProductMenu({ open: false });
+      setCanvasMenu({
+        open: true,
+        x,
+        y,
+        parentId: activeFolderId === 'all' ? null : activeFolderId,
+      });
     };
 
     window.addEventListener('click', closeAll);
-    window.addEventListener('contextmenu', closeAll);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('contextmenu', handleGlobalContextMenu);
+
     return () => {
       window.removeEventListener('click', closeAll);
-      window.removeEventListener('contextmenu', closeAll);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('contextmenu', handleGlobalContextMenu);
     };
-  }, [canvasMenu.open, folderMenu.open, productMenu.open]);
+  }, [activeFolderId]);
 
   const handleScannedBarcode = (code: string) => {
     const raw = (code || '').trim();
@@ -774,8 +829,19 @@ export default function InventoryPage() {
   };
 
   const handleCanvasContextMenu = (event: ReactMouseEvent<HTMLElement>) => {
-    event.preventDefault();
+    // Preserve standard browser context menu for inputs
     const target = event.target as HTMLElement;
+    if (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      target.closest('input') ||
+      target.closest('textarea')
+    ) {
+      return;
+    }
+
+    event.preventDefault();
     if (target.closest('[data-folder-entry="true"]') || target.closest('[data-product-entry="true"]')) return;
     openCanvasMenu(event.clientX, event.clientY, activeFolderId === 'all' ? null : activeFolderId);
   };
@@ -1600,10 +1666,13 @@ export default function InventoryPage() {
           </div>
 
           {/* Main scrollable content */}
-          <div className="flex-1 overflow-y-auto w-full px-3 sm:px-4 lg:px-6 py-4" onContextMenu={handleCanvasContextMenu} onScroll={(e) => {
-            const el = e.currentTarget;
-            setHeaderScrolled(el.scrollTop > 10);
-          }}>
+          <div 
+            className="flex-1 overflow-y-auto w-full px-3 sm:px-4 lg:px-6 py-4" 
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              setHeaderScrolled(el.scrollTop > 10);
+            }}
+          >
             {loading ? (
               <div className="flex items-center justify-center py-24">
                 <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-amber-600"></div>
@@ -1899,9 +1968,15 @@ export default function InventoryPage() {
             </svg>
             Rename
           </button>
+          <div className="my-1 border-t border-stone-200 dark:border-stone-700" />
           <button
             type="button"
-            onClick={() => handleStartChildFolder(folderMenu.folderId)}
+            onClick={() => {
+              setCreateFolderParentId(folderMenu.folderId);
+              setIsCreatingFolder(true);
+              setNewFolderName('');
+              setFolderMenu({ open: false });
+            }}
             className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
           >
             <svg className="h-4 w-4 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -2005,6 +2080,35 @@ export default function InventoryPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4.5 8.5C4.5 7.67 5.17 7 6 7h3.5L11 8.5H18c.83 0 1.5.67 1.5 1.5V16c0 .83-.67 1.5-1.5 1.5H6A1.5 1.5 0 0 1 4.5 16V8.5Z" />
             </svg>
             Move to My Drive
+          </button>
+          <div className="my-1 border-t border-stone-200 dark:border-stone-700" />
+          <button
+            type="button"
+            onClick={() => {
+              setCreateFolderParentId(activeFolderId === 'all' ? null : activeFolderId);
+              setIsCreatingFolder(true);
+              setNewFolderName('');
+              setProductMenu({ open: false });
+            }}
+            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
+          >
+            <svg className="h-4 w-4 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 5v14M5 12h14" />
+            </svg>
+            New folder here
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setProductMenu({ open: false });
+              router.push('/inventory/new');
+            }}
+            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
+          >
+            <svg className="h-4 w-4 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M8 6.75h8A1.25 1.25 0 0 1 17.25 8v8A1.25 1.25 0 0 1 16 17.25H8A1.25 1.25 0 0 1 6.75 16V8A1.25 1.25 0 0 1 8 6.75Z" />
+            </svg>
+            New item
           </button>
           <div className="my-1 border-t border-stone-200 dark:border-stone-700" />
           <button

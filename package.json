@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "supabase:migrate-user": "tsx scripts/sync-data.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -127,7 +127,7 @@ export default function NewProductPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-[#f9f9f8]">
+    <div className="h-full overflow-y-auto bg-[#f9f9f8] dark:bg-stone-900">
     <div className="py-4 sm:py-6 px-3 sm:px-6 lg:px-8">
       <div className="max-w-[1400px] mx-auto space-y-6">
         <div className="flex items-center justify-between gap-3">
@@ -140,8 +140,8 @@ export default function NewProductPage() {
               <span>←</span>
               <span>Back to inventory</span>
             </button>
-            <h1 className="text-2xl sm:text-3xl font-bold text-stone-900 truncate">New product</h1>
-            <p className="text-xs text-stone-500 mt-1 truncate">
+            <h1 className="text-2xl sm:text-3xl font-bold text-stone-900 dark:text-stone-100 truncate">New product</h1>
+            <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 truncate">
               Create a standalone product that can receive stock later from purchase orders or manual receipts.
             </p>
           </div>
@@ -158,16 +158,16 @@ export default function NewProductPage() {
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-md px-3 py-2 text-[11px] text-red-700">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md px-3 py-2 text-[11px] text-red-700 dark:text-red-400">
             {error}
           </div>
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Left column: Product Information card */}
-          <div className="bg-white rounded-lg border border-stone-200 p-4 sm:p-5 space-y-4">
-            <h2 className="text-sm font-semibold text-stone-900">Product Information</h2>
-            <div className="relative w-full h-48 sm:h-64 rounded-md overflow-hidden border border-stone-200 bg-[#f9f9f8]">
+          <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5 space-y-4 shadow-sm">
+            <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Product Information</h2>
+            <div className="relative w-full h-48 sm:h-64 rounded-md overflow-hidden border border-stone-200 dark:border-stone-700 bg-[#f9f9f8] dark:bg-stone-900">
               {form.imageUrl.trim() ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -176,80 +176,80 @@ export default function NewProductPage() {
                   className="h-full w-full object-contain"
                 />
               ) : (
-                <div className="h-full w-full bg-gradient-to-br from-stone-100 to-stone-200 flex items-center justify-center text-3xl font-bold text-stone-600 uppercase">
+                <div className="h-full w-full bg-gradient-to-br from-stone-100 to-stone-200 dark:from-stone-800 dark:to-stone-700 flex items-center justify-center text-3xl font-bold text-stone-600 dark:text-stone-400 uppercase">
                   {initials || 'PR'}
                 </div>
               )}
             </div>
             <div>
-              <p className="text-stone-500 text-xs mb-1">Image URL</p>
+              <p className="text-stone-500 dark:text-stone-400 text-xs mb-1">Image URL</p>
               <input
                 value={form.imageUrl}
                 onChange={(e) => handleChange('imageUrl', e.target.value)}
                 placeholder="Paste image URL (e.g. from Supabase storage)"
-                className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
               />
             </div>
-            <div className="border-t border-stone-200 pt-3">
-              <p className="text-stone-500 text-xs mb-1">Notes / Aliases</p>
+            <div className="border-t border-stone-200 dark:border-stone-700 pt-3">
+              <p className="text-stone-500 dark:text-stone-400 text-xs mb-1">Notes / Aliases</p>
               <input
                 value={form.aliases}
                 onChange={(e) => handleChange('aliases', e.target.value)}
                 placeholder="Comma-separated alternative names used on invoices, etc."
-                className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
               />
             </div>
           </div>
 
           {/* Right column: Product Details + QR & Barcode cards */}
           <div className="space-y-5">
-            <div className="bg-white rounded-lg border border-stone-200 p-4 sm:p-5 space-y-3">
-              <h2 className="text-sm font-semibold text-stone-900 mb-1">Product Details</h2>
+            <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5 space-y-3 shadow-sm">
+              <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-1">Product Details</h2>
               <div>
-                <p className="text-xs text-stone-500 mb-1">Name</p>
+                <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Name</p>
                 <input
                   value={form.name}
                   onChange={(e) => handleChange('name', e.target.value)}
-                  className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                  className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
                 />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs text-stone-500 mb-1">Primary SKU</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Primary SKU</p>
                   <input
                     value={form.primarySku}
                     onChange={(e) => handleChange('primarySku', e.target.value)}
-                    className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
                   />
                 </div>
                 <div>
-                  <p className="text-xs text-stone-500 mb-1">Supplier SKU</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Supplier SKU</p>
                   <input
                     value={form.supplierSku}
                     onChange={(e) => handleChange('supplierSku', e.target.value)}
-                    className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
                   />
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs text-stone-500 mb-1">Category</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Category</p>
                   <input
                     value={form.category}
                     onChange={(e) => handleChange('category', e.target.value)}
-                    className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
                   />
                 </div>
                 <div>
-                  <p className="text-xs text-stone-500 mb-1">Supplier</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Supplier</p>
                   <select
                     value={form.supplierId}
                     onChange={(e) => handleChange('supplierId', e.target.value)}
-                    className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
                   >
                     <option value="">No supplier (optional)</option>
                     {suppliers.map((supplier) => (
-                      <option key={supplier.id} value={supplier.id}>
+                      <option key={supplier.id} value={supplier.id} className="bg-white dark:bg-stone-900">
                         {supplier.name}
                       </option>
                     ))}
@@ -258,25 +258,25 @@ export default function NewProductPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-lg border border-stone-200 p-4 sm:p-5 space-y-3">
-              <h2 className="text-sm font-semibold text-stone-900 mb-1">QR & Barcode</h2>
+            <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5 space-y-3 shadow-sm">
+              <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-1">QR & Barcode</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs text-stone-500 mb-1">Barcodes</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Barcodes</p>
                   <input
                     value={form.barcodes}
                     onChange={(e) => handleChange('barcodes', e.target.value)}
                     placeholder="Comma-separated"
-                    className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
                   />
                 </div>
                 <div>
-                  <p className="text-xs text-stone-500 mb-1">Tags</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Tags</p>
                   <input
                     value={form.tags}
                     onChange={(e) => handleChange('tags', e.target.value)}
                     placeholder="Comma-separated"
-                    className="w-full rounded-md bg-[#f9f9f8] border border-stone-200 text-stone-900 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
                   />
                 </div>
               </div>
