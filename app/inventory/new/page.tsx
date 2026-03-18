@@ -23,6 +23,12 @@ interface NewProductForm {
   aliases: string;
   imageUrl: string;
   supplierId: string;
+  shopifyBound: boolean;
+  pricingGreenlight: boolean;
+  targetMargin: string;
+  pricingSalesTaxPct: string;
+  pricingShopifyFeePct: string;
+  pricingPostagePackagingGbp: string;
 }
 
 export default function NewProductPage() {
@@ -38,12 +44,18 @@ export default function NewProductPage() {
     aliases: '',
     imageUrl: '',
     supplierId: '',
+    shopifyBound: false,
+    pricingGreenlight: false,
+    targetMargin: '',
+    pricingSalesTaxPct: '0',
+    pricingShopifyFeePct: '0',
+    pricingPostagePackagingGbp: '0',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
 
-  const handleChange = (field: keyof NewProductForm, value: string) => {
+  const handleChange = (field: keyof NewProductForm, value: string | boolean) => {
     setForm((prev) => ({
       ...prev,
       [field]: value,
@@ -62,7 +74,20 @@ export default function NewProductPage() {
       }
     };
 
+    const loadAccountSettings = async () => {
+      try {
+        const res = await authenticatedFetch('/api/account');
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.data?.settings?.shopifyConnected) {
+          setForm(prev => ({ ...prev, shopifyBound: true }));
+        }
+      } catch (err) {
+        console.error('Failed to load Shopify connection status', err);
+      }
+    };
+
     loadSuppliers();
+    loadAccountSettings();
   }, []);
 
   const parseList = (value: string): string[] =>
@@ -100,6 +125,12 @@ export default function NewProductPage() {
         aliases: parseList(form.aliases),
         imageUrl: form.imageUrl.trim() || null,
         supplierId: form.supplierId.trim() || null,
+        shopifyBound: form.shopifyBound,
+        pricingGreenlight: form.pricingGreenlight,
+        targetMargin: form.targetMargin.trim() === '' ? null : Number(form.targetMargin),
+        pricingSalesTaxPct: Number(form.pricingSalesTaxPct || 0),
+        pricingShopifyFeePct: Number(form.pricingShopifyFeePct || 0),
+        pricingPostagePackagingGbp: Number(form.pricingPostagePackagingGbp || 0),
       };
 
       const res = await authenticatedFetch('/api/inventory/product', {
@@ -255,6 +286,80 @@ export default function NewProductPage() {
                     ))}
                   </select>
                 </div>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4 sm:p-5 space-y-3 shadow-sm">
+              <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100 mb-1">Pricing Automation</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Target margin %</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99.99}
+                    step="0.01"
+                    value={form.targetMargin}
+                    onChange={(e) => handleChange('targetMargin', e.target.value)}
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Sales tax %</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.01"
+                    value={form.pricingSalesTaxPct}
+                    onChange={(e) => handleChange('pricingSalesTaxPct', e.target.value)}
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Shopify fee %</p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.01"
+                    value={form.pricingShopifyFeePct}
+                    onChange={(e) => handleChange('pricingShopifyFeePct', e.target.value)}
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mb-1">Postage/packaging £</p>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={form.pricingPostagePackagingGbp}
+                    onChange={(e) => handleChange('pricingPostagePackagingGbp', e.target.value)}
+                    className="w-full rounded-md bg-[#f9f9f8] dark:bg-stone-900 border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-xs px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2 pt-2">
+                <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
+                  <input
+                    type="checkbox"
+                    checked={form.shopifyBound}
+                    onChange={(e) => handleChange('shopifyBound', e.target.checked)}
+                    className="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-600"
+                  />
+                  {form.shopifyBound ? 'Draft will be created on Shopify automatically' : 'Link to Shopify after creation'}
+                </label>
+                <div />
+                <label className="inline-flex items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
+                  <input
+                    type="checkbox"
+                    checked={form.pricingGreenlight}
+                    onChange={(e) => handleChange('pricingGreenlight', e.target.checked)}
+                    className="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-600"
+                  />
+                  Auto-push price to Shopify when stock is received
+                </label>
               </div>
             </div>
 

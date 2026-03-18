@@ -3,6 +3,7 @@ import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
 import { isValidUUID } from '@/lib/validation';
 import { clearCache } from '@/lib/cache';
+import { updateShopifyProduct, syncShopifyInventory, pushDraftProductToShopify, updateShopifyPrice, calculateAutomatedPrice } from '@/lib/shopify/actions';
 
 interface InventoryRow {
   id: string;
@@ -670,6 +671,93 @@ export async function PUT(request: NextRequest) {
       updatedAt: updatedRow.updated_at,
     }
 
+    // --- AUTOMATIC SHOPIFY SYNC ---
+    try {
+      const { data: integration } = await supabase
+        .from('product_integrations')
+        .select('*')
+        .eq('product_id', id)
+        .eq('platform', 'shopify')
+        .maybeSingle();
+
+      if (integration) {
+        // 1. Sync Name/Title if it was changed
+        if (updates.name) {
+          await updateShopifyProduct(integration.external_product_id, { title: updates.name }, user.id);
+        }
+        
+        // 2. Always Sync Inventory Balance on Save to be sure
+        const { data: inventoryData } = await supabase
+          .from('inventory')
+          .select('quantityonhand, averagecostgbp')
+          .eq('productid', id)
+          .maybeSingle();
+        
+        if (inventoryData && integration.external_inventory_item_id) {
+          console.log(`[ShopifyAutoSync] Syncing product ${id} to inventory item ${integration.external_inventory_item_id} with qty: ${inventoryData.quantityonhand}`);
+          await syncShopifyInventory(integration.external_inventory_item_id, Number(inventoryData.quantityonhand), user.id);
+          
+          // 3. Sync Price if pricing settings have changed and greenlight is ON
+          const pricingChanged = 'pricingGreenlight' in body || 'targetMargin' in body || 
+                                'pricingSalesTaxPct' in body || 'pricingShopifyFeePct' in body || 
+                                'pricingPostagePackagingGbp' in body;
+          
+          if (updatedRow.pricing_greenlight && pricingChanged && updatedRow.target_margin) {
+            const formattedPrice = calculateAutomatedPrice({
+              averageCost: Number(inventoryData.averagecostgbp),
+              postagePackaging: Number(updatedRow.pricing_postage_packaging_gbp),
+              targetMargin: Number(updatedRow.target_margin),
+              salesTaxPct: Number(updatedRow.pricing_sales_tax_pct),
+              shopifyFeePct: Number(updatedRow.pricing_shopify_fee_pct)
+            });
+            
+            if (formattedPrice && integration.external_variant_id) {
+              console.log(`[ShopifyAutoSync] Syncing product ${id} price to: ${formattedPrice}`);
+              await updateShopifyPrice(integration.external_variant_id, formattedPrice, user.id);
+            }
+          }
+        } else {
+          console.log(`[ShopifyAutoSync] Skipping sync for ${id}: inventoryData=${!!inventoryData}, invItemId=${integration.external_inventory_item_id}`);
+        }
+      } else if (updatedRow.shopify_bound) {
+        // 3. Auto-Push if shopify_bound is enabled but not yet linked
+        let resolvedSku = updatedRow.primarysku;
+        if (!resolvedSku) {
+           resolvedSku = 'SL-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+           await supabase.from('products').update({ primarysku: resolvedSku }).eq('id', id);
+        }
+
+        const { data: inventoryData } = await supabase
+          .from('inventory')
+          .select('quantityonhand')
+          .eq('productid', id)
+          .maybeSingle();
+        const initialQty = inventoryData ? Number(inventoryData.quantityonhand) : 0;
+
+        const newShopifyIds = await pushDraftProductToShopify({ name: updatedRow.name }, resolvedSku, user.id, initialQty);
+        
+        await supabase.from('product_integrations').insert({
+          user_id: user.id,
+          product_id: id,
+          platform: 'shopify',
+          external_product_id: newShopifyIds.productId,
+          external_variant_id: newShopifyIds.variantId,
+          external_inventory_item_id: newShopifyIds.inventoryItemId
+        });
+      }
+    } catch (shopifyErr: any) {
+      console.error('Automated Shopify Sync failed on save:', shopifyErr);
+      // If the product was deleted on Shopify, clear our internal link so we can re-sync later
+      if (shopifyErr?.message?.includes('does not exist')) {
+         await supabase
+          .from('product_integrations')
+          .delete()
+          .eq('product_id', id)
+          .eq('platform', 'shopify');
+         console.log('Cleared stale Shopify integration for product:', id);
+      }
+    }
+
     clearCache(`inventory_snapshot_v1_${user.id}`);
     return NextResponse.json({ success: true, data: { product } });
   } catch (error) {
@@ -710,6 +798,14 @@ export async function POST(request: NextRequest) {
         .filter((v) => v.length > 0);
     };
 
+    // Check if Shopify is connected to potentially default shopify_bound
+    const { data: settings } = await supabase
+      .from('user_settings')
+      .select('shopify_store_domain, shopify_access_token')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    const isShopifyConnected = !!(settings?.shopify_store_domain && settings?.shopify_access_token);
+
     const insertPayload: ProductInsertPayload = {
       // Pricing settings defaults for margin automation
       pricing_greenlight: !!body.pricingGreenlight,
@@ -727,7 +823,7 @@ export async function POST(request: NextRequest) {
       folderid: null,
       tags: toStringArray(body.tags),
       imageurl: normalizeOptionalString(body.imageUrl),
-      shopify_bound: !!body.shopifyBound,
+      shopify_bound: body.shopifyBound !== undefined ? !!body.shopifyBound : isShopifyConnected,
       user_id: user.id,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -837,6 +933,30 @@ export async function POST(request: NextRequest) {
       createdAt: newProduct.created_at,
       updatedAt: newProduct.updated_at,
     };
+
+    // --- AUTOMATIC SHOPIFY SYNC ON CREATE ---
+    if (newProduct.shopify_bound) {
+      try {
+        let resolvedSku = newProduct.primarysku;
+        if (!resolvedSku) {
+           resolvedSku = 'SL-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+           await supabase.from('products').update({ primarysku: resolvedSku }).eq('id', newProduct.id);
+        }
+
+        const newShopifyIds = await pushDraftProductToShopify({ name: newProduct.name }, resolvedSku, user.id, 0);
+        
+        await supabase.from('product_integrations').insert({
+          user_id: user.id,
+          product_id: newProduct.id,
+          platform: 'shopify',
+          external_product_id: newShopifyIds.productId,
+          external_variant_id: newShopifyIds.variantId,
+          external_inventory_item_id: newShopifyIds.inventoryItemId
+        });
+      } catch (shopifyErr) {
+        console.error('Automated Shopify Sync failed on create:', shopifyErr);
+      }
+    }
 
     clearCache(`inventory_snapshot_v1_${user.id}`);
 

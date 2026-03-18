@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { SHOPIFY_ADMIN_API_VERSION } from '@/lib/shopify/api-version';
 
 export const runtime = 'nodejs';
 
@@ -82,7 +83,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Verify the token works by fetching shop info
-    const shopResponse = await fetch(`https://${shop}/admin/api/2024-01/shop.json`, {
+    const shopResponse = await fetch(`https://${shop}/admin/api/${SHOPIFY_ADMIN_API_VERSION}/shop.json`, {
       headers: {
         'X-Shopify-Access-Token': accessToken,
         'Content-Type': 'application/json',

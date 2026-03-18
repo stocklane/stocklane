@@ -92,6 +92,9 @@ export default function AccountPage() {
     setShopifyConnecting(true);
     setShopifyMessage(null);
 
+    // Open a blank tab immediately to avoid popup blockers
+    const authTab = window.open('about:blank', '_blank');
+
     try {
       // Call our OAuth initiation endpoint to get the Shopify auth URL
       const res = await authenticatedFetch(
@@ -100,13 +103,23 @@ export default function AccountPage() {
       const data = await res.json();
 
       if (data.success && data.authUrl) {
-        // Redirect to Shopify's OAuth consent screen
-        window.location.href = data.authUrl;
+        // Redirect the blank tab to Shopify's OAuth consent screen
+        if (authTab) {
+          authTab.location.href = data.authUrl;
+        } else {
+          // If popup was blocked anyway, try opening it now
+          window.open(data.authUrl, '_blank');
+        }
+        
+        setShopifyConnecting(false);
+        setShopifyMessage({ type: 'success', text: 'Shopify authorization was opened in a new tab. Please complete the process there then return here.' });
       } else {
+        if (authTab) authTab.close();
         setShopifyMessage({ type: 'error', text: data.error || 'Failed to start Shopify connection' });
         setShopifyConnecting(false);
       }
     } catch (err) {
+      if (authTab) authTab.close();
       setShopifyMessage({ type: 'error', text: 'Failed to connect to Shopify' });
       setShopifyConnecting(false);
     }

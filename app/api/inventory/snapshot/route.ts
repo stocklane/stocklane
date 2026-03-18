@@ -72,15 +72,20 @@ export async function GET(request: NextRequest) {
           .eq('user_id', user.id)
           .is('deleted_at', null);
 
-        const { data: inventory } = await supabase
-          .from('inventory')
-          .select('*')
-          .eq('user_id', user.id);
+        const productIds = (products as ProductRow[] | null)?.map((p) => p.id) || [];
+        const { data: inventory } = productIds.length > 0 
+          ? await supabase
+              .from('inventory')
+              .select('*')
+              .in('productid', productIds)
+          : { data: [] };
 
-        const { data: transit } = await supabase
-          .from('transit')
-          .select('*')
-          .eq('user_id', user.id);
+        const { data: transit } = productIds.length > 0
+          ? await supabase
+              .from('transit')
+              .select('*')
+              .in('productid', productIds)
+          : { data: [] };
 
         const { data: suppliers } = await supabase
           .from('suppliers')

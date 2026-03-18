@@ -179,7 +179,11 @@ export async function POST(request: NextRequest) {
         if (existingInventory.quantityonhand !== v.quantity) {
           await supabase
             .from('inventory')
-            .update({ quantityonhand: v.quantity, lastupdated: now })
+            .update({ 
+              quantityonhand: v.quantity, 
+              lastupdated: now,
+              user_id: user.id 
+            })
             .eq('id', existingInventory.id);
         }
       } else {

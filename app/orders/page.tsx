@@ -298,6 +298,9 @@ export default function OrdersPage() {
                       Customer
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase tracking-wider">
+                      Items
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase tracking-wider">
                       Total
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-stone-600 dark:text-stone-400 uppercase tracking-wider">
@@ -332,6 +335,11 @@ export default function OrdersPage() {
                         <td className="px-4 py-3">
                           <div className="text-sm text-stone-900 dark:text-stone-100">{order.customer_name || '—'}</div>
                           <div className="text-xs text-stone-400 dark:text-stone-500">{order.customer_email || ''}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="text-sm text-stone-500 dark:text-stone-400 max-w-[200px] truncate">
+                            {order.line_items.map(item => item.title).join(', ')}
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="text-sm font-medium text-stone-900 dark:text-stone-100">

@@ -87,18 +87,35 @@ export async function enqueueWebhookJob(params: EnqueueWebhookJobParams): Promis
   throw new Error(`Failed to enqueue webhook job: ${error.message}`);
 }
 
-export async function resolveProductIdFromVariantOrSku(params: {
-  shopifyVariantId: number | null;
-  sku: string | null;
-}): Promise<string | null> {
-  if (typeof params.shopifyVariantId === 'number') {
-    const { data } = await supabase
+export async function resolveProductIdFromVariantOrSku(
+  supabaseClient: any,
+  params: {
+    shopifyVariantId: string | number | null;
+    sku: string | null;
+  }
+): Promise<string | null> {
+  const variantIdStr = params.shopifyVariantId ? String(params.shopifyVariantId).replace('gid://shopify/ProductVariant/', '') : null;
+  const variantIdNum = variantIdStr ? parseInt(variantIdStr, 10) : null;
+
+  if (variantIdNum && !isNaN(variantIdNum)) {
+    // 1. Check legacy mapping table
+    const { data: legacy } = await supabaseClient
       .from('shopify_variant_map')
       .select('product_id')
-      .eq('shopify_variant_id', params.shopifyVariantId)
-      .single();
+      .eq('shopify_variant_id', variantIdNum)
+      .maybeSingle();
 
-    if (data?.product_id) return data.product_id as string;
+    if (legacy?.product_id) return legacy.product_id as string;
+
+    // 2. Check modern product_integrations table (matching the ID at the end of the GID)
+    const { data: modern } = await supabaseClient
+      .from('product_integrations')
+      .select('product_id')
+      .filter('external_variant_id', 'ilike', `%/${variantIdNum}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (modern?.product_id) return modern.product_id as string;
   }
 
   const sku = typeof params.sku === 'string' ? params.sku.trim() : '';
@@ -106,7 +123,7 @@ export async function resolveProductIdFromVariantOrSku(params: {
 
   const skuLower = sku.toLowerCase();
 
-  const { data: products } = await supabase.from('products').select('id, primarysku, suppliersku, barcodes');
+  const { data: products } = await supabaseClient.from('products').select('id, primarysku, suppliersku, barcodes');
   if (!products) return null;
 
   const match = products.find((p: any) => {

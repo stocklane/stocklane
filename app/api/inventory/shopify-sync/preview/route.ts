@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
 import type { MatchType } from '@/lib/ai-matching';
+import { SHOPIFY_ADMIN_API_VERSION } from '@/lib/shopify/api-version';
 
 export const runtime = 'nodejs';
 
@@ -140,7 +141,7 @@ export async function POST(request: NextRequest) {
 
     const rawVariants: RawVariant[] = [];
     while (hasNextPage) {
-      const response: ShopifyGraphqlResponse = await fetch(`https://${domain}/admin/api/2024-01/graphql.json`, {
+      const response: ShopifyGraphqlResponse = await fetch(`https://${domain}/admin/api/${SHOPIFY_ADMIN_API_VERSION}/graphql.json`, {
         method: 'POST',
         headers: shopifyHeaders,
         body: JSON.stringify({ query: graphqlQuery, variables: { cursor } }),

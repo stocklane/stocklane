@@ -166,7 +166,7 @@ export async function processShopifyWebhookJobs(params: {
         const qty = Number(effect.quantity ?? 0);
         if (!Number.isFinite(qty) || qty <= 0) continue;
 
-        const productId = await resolveProductIdFromVariantOrSku({
+        const productId = await resolveProductIdFromVariantOrSku(supabase, {
           shopifyVariantId: effect.variantId,
           sku: effect.sku,
         });

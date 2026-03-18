@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
+import { SHOPIFY_ADMIN_API_VERSION } from '@/lib/shopify/api-version';
 
 export const runtime = 'nodejs';
 
@@ -97,7 +98,7 @@ export async function PUT(request: NextRequest) {
 
       // Test the connection by making a request to the Shopify API
       try {
-        const testResponse = await fetch(`https://${normalizedDomain}/admin/api/2024-01/shop.json`, {
+        const testResponse = await fetch(`https://${normalizedDomain}/admin/api/${SHOPIFY_ADMIN_API_VERSION}/shop.json`, {
           headers: {
             'X-Shopify-Access-Token': accessToken,
             'Content-Type': 'application/json',

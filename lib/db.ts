@@ -121,6 +121,7 @@ interface InventoryDbRow {
   quantityonhand: number | string | null;
   averagecostgbp: number | string | null;
   lastupdated?: string;
+  user_id?: string;
 }
 
 interface TransitDbRow {
@@ -1176,6 +1177,13 @@ export async function receiveStockForProduct(params: {
 
   if (existingInventory) {
     inventoryRecord = existingInventory;
+    // If the existing record is missing user_id, backfill it from the product
+    if (!existingInventory.user_id && product.user_id) {
+      await supabase
+        .from('inventory')
+        .update({ user_id: product.user_id })
+        .eq('id', existingInventory.id);
+    }
   } else {
     const { data: newInventory, error: insertError } = await supabase
       .from('inventory')
@@ -1183,7 +1191,7 @@ export async function receiveStockForProduct(params: {
         productid: productId,
         quantityonhand: 0,
         averagecostgbp: 0,
-        ...(user_id ? { user_id } : {}),
+        user_id: user_id || product.user_id,
       })
       .select()
       .single();
@@ -1276,6 +1284,7 @@ export async function receiveStockForProduct(params: {
       quantityonhand: newOnHand,
       averagecostgbp: newAvg,
       lastupdated: now,
+      user_id: user_id || product.user_id || inventoryRecord.user_id,
     })
     .eq('id', inventoryRecord.id);
 
@@ -1290,9 +1299,9 @@ export async function receiveStockForProduct(params: {
       .maybeSingle();
 
     if (integration) {
-      // 1. Sync Inventory to Shopify
-      if (receivedQuantity !== 0 && integration.external_inventory_item_id) {
-        await syncShopifyInventory(integration.external_inventory_item_id, receivedQuantity, product.user_id);
+      // 1. Sync Inventory to Shopify (Always sync the Full Balance)
+      if (integration.external_inventory_item_id) {
+        await syncShopifyInventory(integration.external_inventory_item_id, newOnHand, product.user_id);
       }
       
       // 2. Push Price if Greenlighted (Margin Engine)
@@ -1334,7 +1343,8 @@ export async function receiveStockForProduct(params: {
         await supabase.from('products').update({ primarysku: sku }).eq('id', productId);
       }
       
-      const newShopifyIds = await pushDraftProductToShopify(product, sku, product.user_id);
+      // Pass the current total balance as initialQuantity
+      const newShopifyIds = await pushDraftProductToShopify(product, sku, product.user_id, newOnHand);
       
       // Save the new link
       await supabase.from('product_integrations').insert({
@@ -1345,11 +1355,7 @@ export async function receiveStockForProduct(params: {
         external_variant_id: newShopifyIds.variantId,
         external_inventory_item_id: newShopifyIds.inventoryItemId
       });
-      
-      // Push the inventory to the newly created item
-      if (receivedQuantity !== 0) {
-         await syncShopifyInventory(newShopifyIds.inventoryItemId, receivedQuantity, product.user_id);
-      }
+      // (Quantity already synced by pushDraftProductToShopify)
     }
   } catch (err) {
     console.error('Failed to sync receiving event to Shopify:', err);

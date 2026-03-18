@@ -1078,7 +1078,40 @@ export default function ProductHistoryPage() {
                     </div>
                   </div>
                   <div className="pt-1 border-t border-stone-200/70 dark:border-stone-700/70">
-                    <p className="text-xs text-stone-500 dark:text-stone-400 mb-2">Sources & Integrations</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-stone-500 dark:text-stone-400">Sources & Integrations</p>
+                      {(() => {
+                        const isLinked = data.integrations?.find(i => i.platform.toLowerCase() === 'shopify');
+                        return (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!isLinked && !window.confirm('Push this product to Shopify as a draft?')) return;
+                              try {
+                                setSaving(true);
+                                const res = await authenticatedFetch('/api/inventory/product/shopify-push', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ productId: product.id })
+                                });
+                                const json = await res.json();
+                                if (!res.ok || !json.success) throw new Error(json.error || 'Failed to sync with Shopify');
+                                alert(json.message || 'Synced with Shopify successfully');
+                                await reloadProductData();
+                              } catch (err) {
+                                alert(err instanceof Error ? err.message : 'Failed to sync with Shopify');
+                              } finally {
+                                setSaving(false);
+                              }
+                            }}
+                            disabled={saving}
+                            className="text-[10px] font-medium text-amber-600 hover:text-amber-700 disabled:opacity-50"
+                          >
+                            {isLinked ? 'Re-sync to Shopify' : 'Push to Shopify'}
+                          </button>
+                        );
+                      })()}
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {/* Internal Source (Invoices) */}
                       {transit && transit.length > 0 && (

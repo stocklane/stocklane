@@ -243,6 +243,7 @@ export async function POST(request: NextRequest) {
               quantityonhand: newQty,
               averagecostgbp: newCost,
               lastupdated: now,
+              user_id: user.id,
             })
             .eq('id', existingInventory.id);
         } else {

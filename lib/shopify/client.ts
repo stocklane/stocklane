@@ -1,4 +1,5 @@
 import { serverSupabase } from '../supabase-server';
+import { SHOPIFY_ADMIN_API_VERSION } from './api-version';
 
 export interface ShopifyConfig {
   domain: string;
@@ -23,7 +24,7 @@ export async function getShopifyConfig(userId: string): Promise<ShopifyConfig> {
 }
 
 export async function shopifyFetch(config: ShopifyConfig, query: string, variables: any = {}) {
-  const response = await fetch(`https://${config.domain}/admin/api/2024-01/graphql.json`, {
+  const response = await fetch(`https://${config.domain}/admin/api/${SHOPIFY_ADMIN_API_VERSION}/graphql.json`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -36,6 +37,7 @@ export async function shopifyFetch(config: ShopifyConfig, query: string, variabl
 
   if (body.errors) {
     console.error('Shopify GraphQL errors:', JSON.stringify(body.errors, null, 2));
+    console.error('Failed Query Variables:', JSON.stringify(variables, null, 2));
     throw new Error(body.errors[0].message || 'Shopify GraphQL error');
   }
 

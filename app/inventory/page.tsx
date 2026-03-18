@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useState, useRef, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import Link from 'next/link';
 import { authenticatedFetch } from '@/lib/api-client';
 import dynamic from 'next/dynamic';
@@ -136,6 +136,14 @@ export default function InventoryPage() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [headerScrolled, setHeaderScrolled] = useState(false);
   const [syncingShopify, setSyncingShopify] = useState(false);
+  const createFolderInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isCreatingFolder && createFolderInputRef.current) {
+      createFolderInputRef.current.focus();
+      createFolderInputRef.current.select();
+    }
+  }, [isCreatingFolder]);
 
   useEffect(() => {
     const closeAll = () => {
@@ -650,15 +658,15 @@ export default function InventoryPage() {
   const handleStartNewFolder = () => {
     const parentId = activeFolderId === 'all' ? null : activeFolderId;
     setCreateFolderParentId(parentId);
+    setNewFolderName('Untitled folder');
     setIsCreatingFolder(true);
-    setNewFolderName('');
     setFolderMenu({ open: false });
   };
 
   const handleStartChildFolder = (folderId: string) => {
     setCreateFolderParentId(folderId);
+    setNewFolderName('Untitled folder');
     setIsCreatingFolder(true);
-    setNewFolderName('');
     setFolderMenu({ open: false });
   };
 
@@ -1042,14 +1050,16 @@ export default function InventoryPage() {
               </svg>
               <span className="hidden sm:inline">Import CSV</span>
             </Link>
-            <Link
-              href="/inventory/shopify-sync"
-              title="Sync Shopify Catalog & Inventory"
-              className="inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 border border-stone-200 dark:border-stone-700 text-sm font-medium rounded-md text-stone-700 dark:text-stone-300 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-600 transition-colors"
+            <button
+              type="button"
+              onClick={handleShopifySync}
+              disabled={syncingShopify}
+              title="Sync StockLane data to Shopify"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 border border-stone-200 dark:border-stone-700 text-sm font-medium rounded-md text-stone-700 dark:text-stone-300 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <img src="/Shopify_icon.svg" className="w-4 h-4 flex-shrink-0" alt="Shopify" />
-              <span className="hidden sm:inline">Sync Shopify</span>
-            </Link>
+              <span className="hidden sm:inline">{syncingShopify ? 'Syncing...' : 'Sync Shopify'}</span>
+            </button>
             <Link
               href="/inventory/bin"
               title="Open bin"
@@ -1404,39 +1414,7 @@ export default function InventoryPage() {
 
               {/* Folder tree */}
               <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
-                {isCreatingFolder && (
-                  <div className="px-3 pb-2 flex items-center gap-2">
-                    <input
-                      value={newFolderName}
-                      onChange={(e) => setNewFolderName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleCreateFolder();
-                        } else if (e.key === 'Escape') {
-                          e.preventDefault();
-                          handleCancelNewFolder();
-                        }
-                      }}
-                      placeholder="New folder name"
-                      className="flex-1 rounded-md bg-[#f9f9f8] dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[11px] text-stone-900 dark:text-stone-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleCreateFolder}
-                      className="px-2 py-1 text-[11px] rounded-md bg-amber-600 text-white hover:bg-amber-700"
-                    >
-                      Save
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCancelNewFolder}
-                      className="px-1.5 py-1 text-[11px] rounded-md text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
+
                 <button
                   type="button"
                   onClick={() => setActiveFolderId('all')}
@@ -1973,8 +1951,8 @@ export default function InventoryPage() {
             type="button"
             onClick={() => {
               setCreateFolderParentId(folderMenu.folderId);
+              setNewFolderName('Untitled folder');
               setIsCreatingFolder(true);
-              setNewFolderName('');
               setFolderMenu({ open: false });
             }}
             className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
@@ -2008,8 +1986,8 @@ export default function InventoryPage() {
             type="button"
             onClick={() => {
               setCreateFolderParentId(canvasMenu.parentId);
+              setNewFolderName('Untitled folder');
               setIsCreatingFolder(true);
-              setNewFolderName('');
               setCanvasMenu({ open: false });
             }}
             className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
@@ -2068,26 +2046,28 @@ export default function InventoryPage() {
             </svg>
             Open
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              void handleAssignProductToFolder(productMenu.product.id, 'all');
-              setProductMenu({ open: false });
-            }}
-            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
-          >
-            <svg className="h-4 w-4 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4.5 8.5C4.5 7.67 5.17 7 6 7h3.5L11 8.5H18c.83 0 1.5.67 1.5 1.5V16c0 .83-.67 1.5-1.5 1.5H6A1.5 1.5 0 0 1 4.5 16V8.5Z" />
-            </svg>
-            Move to My Drive
-          </button>
+          {productMenu.product.folderId !== null && (
+            <button
+              type="button"
+              onClick={() => {
+                void handleAssignProductToFolder(productMenu.product.id, 'all');
+                setProductMenu({ open: false });
+              }}
+              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
+            >
+              <svg className="h-4 w-4 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4.5 8.5C4.5 7.67 5.17 7 6 7h3.5L11 8.5H18c.83 0 1.5.67 1.5 1.5V16c0 .83-.67 1.5-1.5 1.5H6A1.5 1.5 0 0 1 4.5 16V8.5Z" />
+              </svg>
+              Move to My Drive
+            </button>
+          )}
           <div className="my-1 border-t border-stone-200 dark:border-stone-700" />
           <button
             type="button"
             onClick={() => {
               setCreateFolderParentId(activeFolderId === 'all' ? null : activeFolderId);
+              setNewFolderName('Untitled folder');
               setIsCreatingFolder(true);
-              setNewFolderName('');
               setProductMenu({ open: false });
             }}
             className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[15px] text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-700"
@@ -2219,23 +2199,7 @@ export default function InventoryPage() {
           </div>
           {/* Folder tree - identical to desktop sidebar */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
-            {isCreatingFolder && (
-              <div className="px-3 pb-2 flex items-center gap-2">
-                <input
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') { e.preventDefault(); handleCreateFolder(); }
-                    else if (e.key === 'Escape') { e.preventDefault(); handleCancelNewFolder(); }
-                  }}
-                  placeholder="New folder name"
-                  autoFocus
-                  className="flex-1 rounded-md bg-[#f9f9f8] dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[11px] text-stone-900 dark:text-stone-100 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-amber-600"
-                />
-                <button type="button" onClick={handleCreateFolder} className="px-2 py-1 text-[11px] rounded-md bg-amber-600 text-white hover:bg-amber-700">Save</button>
-                <button type="button" onClick={handleCancelNewFolder} className="px-1.5 py-1 text-[11px] rounded-md text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100">×</button>
-              </div>
-            )}
+
             <button
               type="button"
               onClick={() => { setActiveFolderId('all'); setMobileFoldersOpen(false); }}
@@ -2334,6 +2298,56 @@ export default function InventoryPage() {
         }}
         onConfirm={handleConfirmDialogConfirm}
       />
+      {isCreatingFolder && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4" 
+          onClick={handleCancelNewFolder}
+        >
+          <div
+            className="w-full max-w-sm overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-800"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="p-6 pb-2">
+              <h3 className="text-xl font-medium text-stone-900 dark:text-stone-100">New folder</h3>
+            </div>
+            
+            <div className="p-6 pt-2">
+              <input
+                ref={createFolderInputRef}
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleCreateFolder();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    handleCancelNewFolder();
+                  }
+                }}
+                className="w-full rounded-lg border-2 border-amber-600 bg-[#f9f9f8] dark:bg-stone-900 px-4 py-3 text-[15px] font-medium text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-6 pb-6">
+              <button
+                type="button"
+                onClick={handleCancelNewFolder}
+                className="rounded-lg px-4 py-2 text-[14px] font-semibold text-stone-600 hover:bg-stone-50 dark:text-stone-400 dark:hover:bg-stone-700/50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCreateFolder()}
+                className="rounded-lg bg-amber-600 px-4 py-2 text-[14px] font-semibold text-white hover:bg-amber-700 active:scale-[0.98] transition-transform"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

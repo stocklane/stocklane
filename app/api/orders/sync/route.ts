@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth-helpers';
 import { applyRateLimit } from '@/lib/rate-limit';
+import { resolveProductIdFromVariantOrSku } from '@/lib/shopify/webhooks/supabase';
+import { SHOPIFY_ADMIN_API_VERSION } from '@/lib/shopify/api-version';
 
 export const runtime = 'nodejs';
 
@@ -93,7 +95,7 @@ export async function POST(request: NextRequest) {
       }
     }`;
 
-    const shopifyRes = await fetch(`https://${domain}/admin/api/2024-01/graphql.json`, {
+    const shopifyRes = await fetch(`https://${domain}/admin/api/${SHOPIFY_ADMIN_API_VERSION}/graphql.json`, {
       method: 'POST',
       headers: shopifyHeaders,
       body: JSON.stringify({ query: graphqlQuery }),
@@ -185,17 +187,59 @@ export async function POST(request: NextRequest) {
         updated_at: new Date().toISOString(),
       };
 
-      const { error: upsertError } = await supabase
+      const { data: internalOrder, error: upsertError } = await supabase
         .from('shopify_orders')
         .upsert(orderData, {
           onConflict: 'shopify_order_id',
-        });
+        })
+        .select('id')
+        .single();
 
-      if (upsertError) {
-        console.error(`Failed to upsert order ${order.id}:`, upsertError.message);
+      if (upsertError || !internalOrder) {
+        console.error(`Failed to upsert order ${order.id}:`, upsertError?.message);
         errors++;
       } else {
         synced++;
+        
+        // --- INVENTORY EFFECT ENGINE ---
+        // Resolve products and record inventory effects if not already present
+        const { data: existingEffects } = await supabase
+          .from('order_inventory_effects')
+          .select('id')
+          .eq('order_id', internalOrder.id);
+        
+        if (!existingEffects || existingEffects.length === 0) {
+          for (const item of lineItems) {
+            try {
+              const productId = await resolveProductIdFromVariantOrSku(supabase, {
+                shopifyVariantId: item.variant_id,
+                sku: item.sku
+              });
+
+              if (productId) {
+                // 1. Record for UI
+                await supabase.from('order_inventory_effects').insert({
+                  order_id: internalOrder.id,
+                  product_id: productId,
+                  quantity_change: -item.quantity
+                });
+
+                // 2. Apply actual inventory deduction (idempotent via RPC)
+                await supabase.rpc('apply_shopify_inventory_effect', {
+                  p_webhook_id: `sync-${shopifyOrderId}-${productId}`,
+                  p_product_id: productId,
+                  p_delta: -item.quantity,
+                  p_context: { 
+                    order_number: orderData.order_number, 
+                    source: 'manual_sync_v1' 
+                  }
+                });
+              }
+            } catch (err) {
+              console.error(`Error resolving line item for order ${shopifyOrderId}:`, err);
+            }
+          }
+        }
       }
     }
 
