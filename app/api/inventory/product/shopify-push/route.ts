@@ -17,7 +17,7 @@ type InventoryJoinRow = {
 };
 
 function getCalculatedShopifyPrice(params: {
-  averageCostGbp: number | null | undefined;
+  averageCostGbp: number | string | null | undefined;
   targetMargin: number | string | null | undefined;
   pricingSalesTaxPct: number | string | null | undefined;
   pricingShopifyFeePct: number | string | null | undefined;
